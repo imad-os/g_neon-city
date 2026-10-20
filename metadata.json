@@ -1,0 +1,6 @@
+{
+  "name": "Neon City: Solara Bay '88",
+  "description": "1988 3D open-world action driving game set in coastal Solara Bay, built for My PC Smart TV with full Nintendo Switch controller remapping and 1GB RAM graphics optimization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

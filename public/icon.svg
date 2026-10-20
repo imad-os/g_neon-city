@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#170b2c"/>
+      <stop offset="55%" stop-color="#6b1d5c"/>
+      <stop offset="85%" stop-color="#ff5e7e"/>
+      <stop offset="100%" stop-color="#ffb347"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffe66d"/>
+      <stop offset="100%" stop-color="#ff2e93"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="40" fill="url(#sky)"/>
+  <circle cx="128" cy="134" r="62" fill="url(#sun)"/>
+  <g fill="#170b2c">
+    <rect x="56" y="138" width="144" height="5"/>
+    <rect x="56" y="150" width="144" height="7"/>
+    <rect x="56" y="165" width="144" height="9"/>
+    <rect x="0" y="182" width="256" height="74"/>
+  </g>
+  <path d="M24 182 V140 H44 V182 M48 182 V118 H72 V182 M184 182 V122 H210 V182 M214 182 V146 H234 V182" fill="#120824"/>
+  <path d="M88 182 Q92 142 84 114" stroke="#120824" stroke-width="6" fill="none"/>
+  <path d="M84 114 Q62 110 54 124 M84 114 Q68 98 56 102 M84 114 Q98 96 112 106 M84 114 Q104 112 114 126" stroke="#120824" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M64 198 L88 176 L154 176 L188 192 L196 208 L60 208 Z" fill="#00f5d4"/>
+  <path d="M92 180 L148 180 L170 192 L76 192 Z" fill="#170b2c"/>
+  <circle cx="92" cy="208" r="14" fill="#ff2e93" stroke="#170b2c" stroke-width="5"/>
+  <circle cx="168" cy="208" r="14" fill="#ff2e93" stroke="#170b2c" stroke-width="5"/>
+  <text x="128" y="64" text-anchor="middle" font-family="Arial Black, Impact, sans-serif" font-size="30" font-style="italic" fill="#00f5d4" stroke="#170b2c" stroke-width="4">NEON CITY</text>
+</svg>
