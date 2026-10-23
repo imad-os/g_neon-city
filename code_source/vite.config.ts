@@ -7,9 +7,10 @@ import {defineConfig, type Plugin} from 'vite';
 function stripDotSlashAssetsPlugin(): Plugin {
   return {
     name: 'strip-dot-slash-assets',
+    apply: 'build',
     enforce: 'post',
     buildStart() {
-      const assetsOutDir = path.resolve(__dirname, '../assets');
+      const assetsOutDir = path.resolve(import.meta.dirname, '../assets');
       if (fs.existsSync(assetsOutDir)) {
         fs.rmSync(assetsOutDir, { recursive: true, force: true });
       }
@@ -26,18 +27,23 @@ function stripDotSlashAssetsPlugin(): Plugin {
 
 export default defineConfig(() => {
   return {
-    root: path.resolve(__dirname, '.'),
+    root: path.resolve(import.meta.dirname, '.'),
     base: './',
     plugins: [react(), tailwindcss(), stripDotSlashAssetsPlugin()],
+    server: {
+      port: 3000,
+      host: '0.0.0.0',
+      hmr: false,
+    },
     build: {
       target: 'chrome108',
-      outDir: path.resolve(__dirname, '..'),
+      outDir: path.resolve(import.meta.dirname, '..'),
       assetsDir: 'assets',
       emptyOutDir: false,
     },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
   };

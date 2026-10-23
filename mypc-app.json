@@ -6,7 +6,7 @@
   "type": "game",
   "entry": "index.html",
   "icon": "icon.svg",
-  "version": "1.1.1",
+  "version": "1.2.1",
   "scores": true,
   "config": {
     "defaultPreset": "tv-balanced",
