@@ -1,3 +1,4 @@
+import fs from 'fs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -7,6 +8,12 @@ function stripDotSlashAssetsPlugin(): Plugin {
   return {
     name: 'strip-dot-slash-assets',
     enforce: 'post',
+    buildStart() {
+      const assetsOutDir = path.resolve(__dirname, '../assets');
+      if (fs.existsSync(assetsOutDir)) {
+        fs.rmSync(assetsOutDir, { recursive: true, force: true });
+      }
+    },
     transformIndexHtml(html) {
       return html
         .replace(/(href|src)="\.\/assets\//g, '$1="assets/')
@@ -19,26 +26,19 @@ function stripDotSlashAssetsPlugin(): Plugin {
 
 export default defineConfig(() => {
   return {
-    root: path.resolve(__dirname, 'code_surce'),
+    root: path.resolve(__dirname, '.'),
     base: './',
     plugins: [react(), tailwindcss(), stripDotSlashAssetsPlugin()],
     build: {
       target: 'chrome108',
-      outDir: path.resolve(__dirname, '.'),
+      outDir: path.resolve(__dirname, '..'),
       assetsDir: 'assets',
       emptyOutDir: false,
     },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, 'code_surce'),
+        '@': path.resolve(__dirname, '.'),
       },
-    },
-    server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modify—file watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };
 });
