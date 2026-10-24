@@ -1,11 +1,11 @@
 {
   "name": "neon-city-solara-88",
   "private": true,
-  "version": "1.2.1",
+  "version": "2.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite --config code_source/vite.config.ts --port=3000 --host=0.0.0.0",
-    "build": "vite build --config code_source/vite.config.ts",
+    "build": "NODE_ENV=production vite build --config code_source/vite.config.ts",
     "preview": "vite preview --config code_source/vite.config.ts --port=3000 --host=0.0.0.0",
     "lint": "tsc -p code_source/tsconfig.json --noEmit"
   },

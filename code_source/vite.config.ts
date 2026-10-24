@@ -4,12 +4,19 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig, type Plugin} from 'vite';
 
-const APP_VERSION = '1.3.0';
+const rootMypcPath = path.resolve(import.meta.dirname, '../mypc-app.json');
+const publicMypcPath = path.resolve(import.meta.dirname, './public/mypc-app.json');
+const mypcConfig = JSON.parse(fs.readFileSync(rootMypcPath, 'utf-8'));
+if (fs.existsSync(publicMypcPath)) {
+  fs.writeFileSync(publicMypcPath, JSON.stringify(mypcConfig, null, 2) + '\n');
+}
+const APP_VERSION = mypcConfig.version || '2.3.0';
 
 const IMPORT_MAP = {
   imports: {
     'react': 'https://esm.sh/react@19.0.1',
     'react/jsx-runtime': 'https://esm.sh/react@19.0.1/jsx-runtime',
+    'react/jsx-dev-runtime': 'https://esm.sh/react@19.0.1/jsx-dev-runtime',
     'react-dom': 'https://esm.sh/react-dom@19.0.1?external=react',
     'react-dom/client': 'https://esm.sh/react-dom@19.0.1/client?external=react',
     'lucide-react': 'https://esm.sh/lucide-react@0.546.0?external=react',
@@ -40,7 +47,10 @@ function stripDotSlashAssetsPlugin(): Plugin {
   };
 }
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
+  if (command === 'build') {
+    process.env.NODE_ENV = 'production';
+  }
   return {
     root: path.resolve(import.meta.dirname, '.'),
     base: './',
@@ -59,6 +69,7 @@ export default defineConfig(() => {
         external: [
           'react',
           'react/jsx-runtime',
+          'react/jsx-dev-runtime',
           'react-dom',
           'react-dom/client',
           'lucide-react',
