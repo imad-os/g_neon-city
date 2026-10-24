@@ -11,6 +11,8 @@ import {
   getButtonLabel,
   getDistrictAt,
   getLogicalDimensions,
+  getResolvedHudVisibility,
+  pickTrafficVehicleSpec,
   remapControllerAction,
   resolveCircleBuildingCollisions,
   stepVehiclePhysics,
@@ -33,6 +35,22 @@ test('Graphics presets scale from 1GB TV Eco up to Ultra (50k) and Super (100k) 
   assert.equal(dims540.height, 540);
 });
 
+test('Citroën C3 2019 (White / Red Roof) is the primary vehicle and very common in traffic', () => {
+  const c3 = VEHICLE_SPECS[0];
+  assert.equal(c3.id, 'citroen-c3-2019');
+  assert.equal(c3.primaryColor, 0xf8fafc);
+  assert.equal(c3.secondaryColor, 0xdc2626);
+  assert.equal(pickTrafficVehicleSpec(0).id, 'citroen-c3-2019');
+  assert.equal(pickTrafficVehicleSpec(2).id, 'citroen-c3-2019');
+});
+
+test('HUD visibility settings resolve all 12 toggles cleanly', () => {
+  const hud = getResolvedHudVisibility(GRAPHICS_PRESETS['solara-high']);
+  assert.equal(hud.masterHud, true);
+  assert.equal(hud.minimap, true);
+  assert.equal(hud.speedometer, true);
+});
+
 test('Nintendo Switch controller mapping resolves button labels and remaps cleanly', () => {
   const mapping = createDefaultControllerMapping('switch');
   assert.equal(getButtonLabel(0, 'switch'), 'B (Bottom)');
@@ -51,40 +69,41 @@ test('analog stick deadzone filters drift and scales active input to 0..1', () =
   assert.ok(Math.abs(full - 1.0) < 1e-6);
 });
 
-test('Solara Bay 5 districts classify coordinates accurately', () => {
-  assert.equal(getDistrictAt(40, 0).id, 'starlight-beach');
-  assert.equal(getDistrictAt(-40, 0).id, 'neon-strip');
-  assert.equal(getDistrictAt(-40, 80).id, 'palm-harbor');
-  assert.equal(getDistrictAt(-40, -85).id, 'coral-heights');
-  assert.equal(getDistrictAt(-85, 20).id, 'sunset-industrial');
+test('Greater Tangier 8 districts classify coordinates accurately', () => {
+  assert.equal(getDistrictAt(-50, 0).id, 'mesnana-golf');
+  assert.equal(getDistrictAt(40, 0).id, 'royal-golf');
+  assert.equal(getDistrictAt(-50, 80).id, 'hay-kawassim');
+  assert.equal(getDistrictAt(0, -100).id, 'route-boubana');
+  assert.equal(getDistrictAt(80, 100).id, 'foret-rahrah');
+  assert.equal(getDistrictAt(-300, -250).id, 'cap-spartel');
+  assert.equal(getDistrictAt(-180, 320).id, 'boukhalef-uni');
+  assert.equal(getDistrictAt(310, -160).id, 'malabata-corniche');
 });
 
 test('Building AABB collision prevents vehicles from driving through city blocks', () => {
-  // Block center at (20, 20) is occupied by a Starlight Beach hotel block
-  const insideAttempt = resolveCircleBuildingCollisions(20, 18, 1.5);
+  const insideAttempt = resolveCircleBuildingCollisions(-76, -56, 1.5);
   assert.equal(insideAttempt.hitBuilding, true);
-  // Position on Ocean Drive (x=40, z=18) is clear road
-  const roadAttempt = resolveCircleBuildingCollisions(40, 18, 1.5);
+  const roadAttempt = resolveCircleBuildingCollisions(-35, -15, 1.5);
   assert.equal(roadAttempt.hitBuilding, false);
 });
 
-test('vehicle physics accelerates, steers, and stays inside Solara Bay shoreline bounds', () => {
-  const countach = VEHICLE_SPECS[0];
-  let state = { x: 40, z: 0, heading: 0, speed: 0, kmh: 0, hitBuilding: false };
+test('vehicle physics accelerates, steers, and stays inside Greater Tangier bounds', () => {
+  const car = VEHICLE_SPECS[0];
+  let state = { x: -35, z: -15, heading: 0, speed: 0, kmh: 0, hitBuilding: false };
   for (let i = 0; i < 30; i++) {
     state = stepVehiclePhysics(
       state,
       { throttle: 1, brake: 0, steer: 0.15, handbrake: false },
-      countach,
+      car,
       1 / 60
     );
   }
   assert.ok(state.speed > 5, 'vehicle should accelerate forward');
   assert.ok(state.heading < 0, 'steering should rotate vehicle heading');
 
-  const clamped = clampWorldPosition(250, -300);
-  assert.ok(clamped.x <= 64);
-  assert.ok(clamped.z >= -108);
+  const clamped = clampWorldPosition(950, -950);
+  assert.ok(clamped.x <= 438);
+  assert.ok(clamped.z >= -438);
 });
 
 test('saved progress validation restores valid MyPC save and rejects corrupt payloads', () => {
@@ -96,7 +115,7 @@ test('saved progress validation restores valid MyPC save and rejects corrupt pay
     ...initial,
     cash: 4500,
     currentMissionIndex: 2,
-    completedMissions: ['m1-ocean-drive-pickup', 'm2-neon-strip-heat'],
+    completedMissions: ['m1-mesnana-golf-welcome', 'm2-kawassim-courier'],
   });
   assert.ok(restored);
   assert.equal(restored.cash, 4500);
@@ -113,4 +132,3 @@ test('keyboard normalization supports QWERTY WASD, AZERTY ZQSD, Arrow keys, and 
   assert.equal(normalizeKeyboardCode('', 'ArrowUp'), 'ArrowUp');
   assert.equal(normalizeKeyboardCode('', ' '), 'Space');
 });
-

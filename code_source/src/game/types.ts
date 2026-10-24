@@ -2,16 +2,41 @@ export type LanguageCode = 'en' | 'fr' | 'es' | 'ar';
 
 export type GameState = 'title' | 'playing' | 'paused' | 'gameover';
 
+export type TextSizeScale = 'tiny' | 'small' | 'normal' | 'large' | 'xl';
+
+export type CommandHubTab = 'map' | 'missions' | 'settings' | 'controls' | 'radio';
+
+export type ControlContextTab = 'inCar' | 'onFoot' | 'menuUi';
+
 export type DistrictId =
-  | 'starlight-beach'
-  | 'neon-strip'
-  | 'coral-heights'
-  | 'palm-harbor'
-  | 'sunset-industrial';
+  | 'mesnana-golf'
+  | 'royal-golf'
+  | 'hay-kawassim'
+  | 'route-boubana'
+  | 'foret-rahrah'
+  | 'cap-spartel'
+  | 'boukhalef-uni'
+  | 'malabata-corniche';
+
+export interface HudVisibilitySettings {
+  masterHud: boolean;
+  minimap: boolean;
+  missionCard: boolean;
+  perfOverlay: boolean;
+  gpsArrowBar: boolean;
+  cashHealthBox: boolean;
+  quickButtons: boolean;
+  wantedStars: boolean;
+  centerBanners: boolean;
+  radioWidget: boolean;
+  actionPrompts: boolean;
+  speedometer: boolean;
+}
 
 export interface DistrictInfo {
   id: DistrictId;
   name: string;
+  arabicName?: string;
   tagline: string;
   color: string;
   bounds: {
@@ -22,11 +47,45 @@ export interface DistrictInfo {
   };
 }
 
+export interface RoadNode {
+  id: string;
+  name: string;
+  x: number;
+  z: number;
+  isRoundabout: boolean;
+  radius: number;
+  district: DistrictId;
+}
+
+export interface RoadSegment {
+  id: string;
+  name: string;
+  fromNodeId: string;
+  toNodeId: string;
+  width: number;
+  isMainArtery: boolean;
+  speedLimitKmh: number;
+}
+
+export interface MapLandmark {
+  id: string;
+  name: string;
+  category: 'golf' | 'roundabout' | 'mosque' | 'plaza' | 'garage' | 'villa' | 'forest';
+  district: DistrictId;
+  x: number;
+  z: number;
+  description: string;
+}
+
 export interface BuildingCollider {
+  id?: string;
+  name?: string;
+  style?: 'tangier-apt' | 'boubana-villa' | 'kawassim-house' | 'socco-plaza' | 'mosque' | 'clubhouse' | 'garage';
   minX: number;
   maxX: number;
   minZ: number;
   maxZ: number;
+  height?: number;
 }
 
 export interface VehicleSpec {
@@ -39,10 +98,12 @@ export interface VehicleSpec {
   primaryColor: number;
   secondaryColor: number;
   isPolice?: boolean;
+  spawnWeight?: number;
 }
 
 export interface MissionObjective {
   description: string;
+  streetHint?: string;
   targetX: number;
   targetZ: number;
   requiresVehicle?: boolean;
@@ -102,11 +163,46 @@ export interface GraphicsSettings {
   fpsCap: 30 | 60;
   antialiasTier: 'off' | '2x' | '4x';
   showPerfOverlay: boolean;
+  textSize: TextSizeScale;
+  hudVisibility?: HudVisibilitySettings;
 }
 
 export type ControllerLayoutStyle = 'switch' | 'xbox' | 'playstation';
 
+export type InCarActionId =
+  | 'carAccelerate'
+  | 'carBrakeReverse'
+  | 'carSteerLeft'
+  | 'carSteerRight'
+  | 'carHandbrake'
+  | 'carNitroBoost'
+  | 'carExitVehicle'
+  | 'carHornSiren'
+  | 'carCameraView'
+  | 'carNextRadio';
+
+export type OnFootActionId =
+  | 'footMoveForward'
+  | 'footMoveBackward'
+  | 'footMoveLeft'
+  | 'footMoveRight'
+  | 'footSprint'
+  | 'footEnterCar'
+  | 'footInteractHustle'
+  | 'footCameraView';
+
+export type MenuUiActionId =
+  | 'uiOpenWorldMap'
+  | 'uiOpenMissions'
+  | 'uiPauseMenu'
+  | 'uiRadarZoom'
+  | 'uiQuickSave';
+
 export type GameActionId =
+  | InCarActionId
+  | OnFootActionId
+  | MenuUiActionId
+  // Legacy aliases kept for compatibility
   | 'accelerate'
   | 'brake'
   | 'handbrake'
@@ -120,12 +216,22 @@ export type GameActionId =
   | 'radarZoom'
   | 'pauseMenu';
 
+export interface ActionBinding {
+  id: GameActionId;
+  context: ControlContextTab;
+  label: string;
+  description: string;
+  gamepadButton: number;
+  keyboardCode: string;
+}
+
 export interface ControllerMapping {
   layoutStyle: ControllerLayoutStyle;
   deadzone: number;
   invertLookY: boolean;
   steerSensitivity: number;
   buttons: Record<GameActionId, number>;
+  keys: Record<GameActionId, string>;
 }
 
 export interface SavedProgress {
@@ -152,6 +258,8 @@ export interface RenderTelemetry {
   textures: number;
   bufferWidth: number;
   bufferHeight: number;
+  activeSectors?: number;
+  totalSectors?: number;
 }
 
 export interface MyPCGamepadPadInfo {

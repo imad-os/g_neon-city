@@ -14,11 +14,14 @@ import {
   createDefaultControllerMapping,
   createInitialProgress,
   getPresetForMyPCTier,
+  getResolvedHudVisibility,
   normalizeKeyboardCode,
   remapControllerAction,
+  remapKeyboardAction,
   validateSavedProgress,
 } from './game/rules.ts';
 import type {
+  CommandHubTab,
   ControllerMapping,
   GameActionId,
   GameState,
@@ -27,24 +30,26 @@ import type {
   MyPCGamepadPadInfo,
   RadioTrack,
   SavedProgress,
+  TextSizeScale,
 } from './game/types.ts';
 import { SolaraWorld3D, type WorldHudSnapshot } from './game/world3d.ts';
 
-const SAVE_KEY_PROGRESS = 'neon_city_save_v1';
-const SAVE_KEY_GRAPHICS = 'neon_city_graphics_v2';
-const SAVE_KEY_CONTROLLER = 'neon_city_controller_v1';
+const SAVE_KEY_PROGRESS = 'tangier_city_save_v2';
+const SAVE_KEY_GRAPHICS = 'tangier_city_graphics_v3';
+const SAVE_KEY_CONTROLLER = 'tangier_city_controller_v3';
 
 export default function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<SolaraWorld3D | null>(null);
   const audioRef = useRef<SolaraAudioEngine>(new SolaraAudioEngine());
 
-  // Mutable refs for 60Hz loop so React renders never recreate the loop
+  // Mutable refs for 60Hz loop
   const gameStateRef = useRef<GameState>('title');
   const settingsOpenRef = useRef<boolean>(false);
   const graphicsRef = useRef<GraphicsSettings>(getPresetForMyPCTier('mid'));
   const mappingRef = useRef<ControllerMapping>(createDefaultControllerMapping('switch'));
   const listeningActionRef = useRef<GameActionId | null>(null);
+  const listeningKeyActionRef = useRef<GameActionId | null>(null);
   const menuFocusIdxRef = useRef<number>(0);
   const savedProgressRef = useRef<SavedProgress | null>(null);
   const keysDownRef = useRef<Set<string>>(new Set());
@@ -58,10 +63,11 @@ export default function App() {
   const lastBtnEdgeTsRef = useRef<Record<number, number>>({});
   const lastMenuNavTsRef = useRef<number>(0);
 
-  // React UI state (synced at <= 10Hz during gameplay)
+  // React UI state
   const [lang, setLang] = useState<LanguageCode>('en');
   const [gameState, setGameState] = useState<GameState>('title');
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [hubInitialTab, setHubInitialTab] = useState<CommandHubTab>('map');
   const [menuFocusIdx, setMenuFocusIdx] = useState<number>(0);
   const [savedProgress, setSavedProgress] = useState<SavedProgress | null>(null);
   const [graphics, setGraphics] = useState<GraphicsSettings>(() => getPresetForMyPCTier('mid'));
@@ -69,6 +75,7 @@ export default function App() {
     createDefaultControllerMapping('switch')
   );
   const [listeningAction, setListeningActionState] = useState<GameActionId | null>(null);
+  const [listeningKeyAction, setListeningKeyActionState] = useState<GameActionId | null>(null);
   const [lastDetectedButton, setLastDetectedButton] = useState<{
     index: number;
     name: string;
@@ -81,9 +88,21 @@ export default function App() {
   const [radarZoomed, setRadarZoomed] = useState<boolean>(false);
   const [hudSnapshot, setHudSnapshot] = useState<WorldHudSnapshot | null>(null);
 
+  // Sync Text Size Scale onto <html> element immediately
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.dataset.textSize = graphics.textSize || 'normal';
+    }
+  }, [graphics.textSize]);
+
   const setListeningAction = (act: GameActionId | null) => {
     listeningActionRef.current = act;
     setListeningActionState(act);
+  };
+
+  const setListeningKeyAction = (act: GameActionId | null) => {
+    listeningKeyActionRef.current = act;
+    setListeningKeyActionState(act);
   };
 
   const syncBodyState = (nextState: GameState, isModalOpen: boolean) => {
@@ -108,11 +127,21 @@ export default function App() {
   const handleUpdateGraphics = (next: GraphicsSettings) => {
     graphicsRef.current = next;
     setGraphics(next);
+    if (typeof document !== 'undefined') {
+      document.documentElement.dataset.textSize = next.textSize || 'normal';
+    }
     worldRef.current?.applyGraphicsSettings(next);
     window.MyPC?.save(SAVE_KEY_GRAPHICS, next);
     if (worldRef.current) {
       setHudSnapshot(worldRef.current.getHudSnapshot());
     }
+  };
+
+  const handleChangeTextSize = (size: TextSizeScale) => {
+    handleUpdateGraphics({
+      ...graphicsRef.current,
+      textSize: size,
+    });
   };
 
   const handleUpdateControllerMapping = (next: ControllerMapping) => {
@@ -131,18 +160,18 @@ export default function App() {
     const startingCash =
       typeof window.MyPC?.app_config?.startingCash === 'number'
         ? (window.MyPC.app_config.startingCash as number)
-        : 500;
+        : 1000;
     const fresh = createInitialProgress(startingCash);
-    worldRef.current?.loadFromSavedProgress(fresh);
+    worldRef.current?.loadFromSavedProgress(fresh, true);
     audioRef.current.start(window.MyPC?.info()?.volume);
-    audioRef.current.setInCar(false);
+    audioRef.current.setInCar(true);
     audioRef.current.playSfx('menuSelect');
     settingsOpenRef.current = false;
     setSettingsOpen(false);
     syncBodyState('playing', false);
     if (worldRef.current) {
       worldRef.current.triggerBanner(
-        'WELCOME TO SOLARA BAY 1988 — TAKE ANY CAR ON OCEAN DRIVE!',
+        'DRIVING IN TANGIER: MESNANA GOLF — USE WASD / ARROWS / STICK (F TO EXIT CAR)',
         4.0
       );
       setHudSnapshot(worldRef.current.getHudSnapshot());
@@ -168,7 +197,7 @@ export default function App() {
       setSettingsOpen(false);
       syncBodyState('playing', false);
       worldRef.current.triggerBanner(
-        `PROGRESS RESTORED · $${existing.cash.toLocaleString()} · MISSION ${existing.currentMissionIndex + 1}`,
+        `TANGIER PROGRESS RESTORED · $${existing.cash.toLocaleString()} · MISSION ${existing.currentMissionIndex + 1}`,
         3.5
       );
       setHudSnapshot(worldRef.current.getHudSnapshot());
@@ -177,8 +206,9 @@ export default function App() {
     }
   };
 
-  const handleOpenSettings = () => {
+  const handleOpenHub = (tab: CommandHubTab = 'map') => {
     audioRef.current.playSfx('menuSelect');
+    setHubInitialTab(tab);
     settingsOpenRef.current = true;
     setSettingsOpen(true);
     if (gameStateRef.current === 'playing') {
@@ -189,6 +219,7 @@ export default function App() {
   const handleCloseSettings = () => {
     audioRef.current.playSfx('menuSelect');
     setListeningAction(null);
+    setListeningKeyAction(null);
     settingsOpenRef.current = false;
     setSettingsOpen(false);
     if (gameStateRef.current === 'paused') {
@@ -232,6 +263,20 @@ export default function App() {
     setCurrentStationIdx(newIdx);
   };
 
+  const handleSelectMission = (missionIdx: number) => {
+    worldRef.current?.selectMission(missionIdx);
+    if (worldRef.current) {
+      setHudSnapshot(worldRef.current.getHudSnapshot());
+    }
+  };
+
+  const handleSetCustomWaypoint = (pt: { x: number; z: number } | null) => {
+    worldRef.current?.setCustomWaypoint(pt);
+    if (worldRef.current) {
+      setHudSnapshot(worldRef.current.getHudSnapshot());
+    }
+  };
+
   const navigateTitleOrModal = (dir: 'up' | 'down' | 'left' | 'right' | 'confirm') => {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (now - lastMenuNavTsRef.current < 90) return;
@@ -267,7 +312,7 @@ export default function App() {
     }
 
     if (gameStateRef.current === 'title') {
-      const count = savedProgressRef.current ? 3 : 2;
+      const count = savedProgressRef.current ? 4 : 3;
       if (dir === 'up' || dir === 'left') {
         menuFocusIdxRef.current = (menuFocusIdxRef.current - 1 + count) % count;
         setMenuFocusIdx(menuFocusIdxRef.current);
@@ -281,10 +326,12 @@ export default function App() {
         if (savedProgressRef.current) {
           if (idx === 0) handleContinueGame();
           else if (idx === 1) handleStartNewGame();
-          else handleOpenSettings();
+          else if (idx === 2) handleOpenHub('map');
+          else handleOpenHub('controls');
         } else {
           if (idx === 0) handleStartNewGame();
-          else handleOpenSettings();
+          else if (idx === 1) handleOpenHub('map');
+          else handleOpenHub('controls');
         }
       }
     }
@@ -318,18 +365,17 @@ export default function App() {
 
     const btns = mappingRef.current.buttons;
 
-    // 1. Settings / Pause Modal Navigation via Controller
+    // 1. Command Hub Modal Navigation via Controller
     if (settingsOpenRef.current) {
-      if (index === btns.pauseMenu || index === 9) {
+      if (index === btns.uiPauseMenu || index === 9) {
         handleCloseSettings();
       } else if (index === 4 || index === 5) {
-        // L / R Shoulder buttons cycle modal tabs
         const tabs = Array.from(
           document.querySelectorAll<HTMLButtonElement>('[data-modal-tab]')
         );
         if (tabs.length > 0) {
           const activeIdx = tabs.findIndex((el) =>
-            el.className.includes('shadow-[0_0_20px')
+            el.className.includes('bg-[#00a8e8]')
           );
           const nextTabIdx =
             index === 5
@@ -358,31 +404,61 @@ export default function App() {
         navigateTitleOrModal('up');
       } else if (index === 13) {
         navigateTitleOrModal('down');
-      } else if (index === 0 || index === 1 || index === 9 || index === btns.enterExitCar) {
+      } else if (index === 0 || index === 1 || index === 9 || index === btns.footEnterCar) {
         navigateTitleOrModal('confirm');
-      } else if (index === 8 || index === btns.pauseMenu) {
-        handleOpenSettings();
+      } else if (index === btns.uiOpenWorldMap) {
+        handleOpenHub('map');
+      } else if (index === btns.uiPauseMenu) {
+        handleOpenHub('controls');
       }
       return;
     }
 
-    // 3. Active 3D Gameplay Actions via Controller
+    // 3. Context-Aware Active Gameplay Actions (In Car vs On Foot + System UI)
     if (gameStateRef.current === 'playing') {
-      if (index === btns.enterExitCar) {
-        handleToggleEnterExitCar();
-      } else if (index === btns.nextRadio) {
-        handleNextRadioStation();
-      } else if (index === btns.attackFire || index === btns.hornSiren) {
-        worldRef.current?.performAttackOrHorn();
-      } else if (index === btns.cameraView) {
-        worldRef.current?.cycleCameraView();
-      } else if (index === btns.radarZoom) {
+      const inCar = Boolean(worldRef.current?.getHudSnapshot().inVehicle);
+
+      // System UI bindings work in both contexts
+      if (index === btns.uiOpenWorldMap) {
+        handleOpenHub('map');
+        return;
+      }
+      if (index === btns.uiOpenMissions) {
+        handleOpenHub('missions');
+        return;
+      }
+      if (index === btns.uiPauseMenu || index === 9) {
+        handleOpenHub('settings');
+        return;
+      }
+      if (index === btns.uiRadarZoom) {
         setRadarZoomed((z) => !z);
-      } else if (index === btns.nextWeapon) {
+        return;
+      }
+      if (index === btns.uiQuickSave) {
         persistProgressNow();
-        worldRef.current?.triggerBanner('PROGRESS SAVED TO MY PC PROFILE', 2.2);
-      } else if (index === btns.pauseMenu || index === 9) {
-        handleOpenSettings();
+        worldRef.current?.triggerBanner('PROGRESS SAVED TO PROFILE', 2.2);
+        return;
+      }
+
+      if (inCar) {
+        if (index === btns.carExitVehicle) {
+          handleToggleEnterExitCar();
+        } else if (index === btns.carNextRadio) {
+          handleNextRadioStation();
+        } else if (index === btns.carHornSiren) {
+          worldRef.current?.performAttackOrHorn();
+        } else if (index === btns.carCameraView) {
+          worldRef.current?.cycleCameraView();
+        }
+      } else {
+        if (index === btns.footEnterCar) {
+          handleToggleEnterExitCar();
+        } else if (index === btns.footInteractHustle) {
+          worldRef.current?.performAttackOrHorn();
+        } else if (index === btns.footCameraView) {
+          worldRef.current?.cycleCameraView();
+        }
       }
     }
   };
@@ -391,7 +467,6 @@ export default function App() {
     const container = canvasMountRef.current;
     if (!container) return;
 
-    // Ensure iframe has keyboard focus immediately and whenever clicked/touched
     window.focus();
     const onPointerDown = () => {
       if (
@@ -407,11 +482,11 @@ export default function App() {
       if (ev === 'autosave') {
         persistProgressNow();
       } else if (ev === 'busted') {
-        world.triggerBanner('BUSTED BY SCPD! -$200 BAIL · RELEASED AT PRECINCT', 4.0);
+        world.triggerBanner('INTERCEPTED BY DGSN TANGER! -$200 BAIL', 4.0);
         audioRef.current.playSfx('siren');
         persistProgressNow();
       } else if (ev === 'wasted') {
-        world.triggerBanner('WASTED · PATCHED UP AT SOLARA BAY CLINIC', 4.0);
+        world.triggerBanner('PATCHED UP AT CLINIQUE MESNANA GOLF', 4.0);
         audioRef.current.playSfx('hit');
       } else {
         audioRef.current.playSfx(ev);
@@ -423,7 +498,6 @@ export default function App() {
     const onResize = () => world.resize();
     window.addEventListener('resize', onResize);
 
-    // Sync connected gamepads from both MyPC.gamepad and browser navigator.getGamepads()
     const refreshConnectedPads = () => {
       const list: MyPCGamepadPadInfo[] = [];
       const sdkPads = window.MyPC?.gamepad?.pads?.() || [];
@@ -449,7 +523,7 @@ export default function App() {
             }
           }
         } catch {
-          // Ignore security errors in restricted contexts
+          // Ignore
         }
       }
       setConnectedPads(list);
@@ -459,7 +533,6 @@ export default function App() {
     window.addEventListener('gamepaddisconnected', refreshConnectedPads);
     refreshConnectedPads();
 
-    // Full Keyboard Support (QWERTY WASD, AZERTY ZQSD, Arrows, F/Enter, Space, Shift, R, C, E/H/G, M/Tab, F5/K, Esc/P)
     const onKeyDown = (e: KeyboardEvent) => {
       if (
         e.target instanceof HTMLInputElement ||
@@ -477,9 +550,9 @@ export default function App() {
         normCode === 'ArrowDown' ||
         normCode === 'ArrowLeft' ||
         normCode === 'ArrowRight' ||
-        normCode === 'Space'
+        normCode === 'Space' ||
+        normCode === 'Tab'
       ) {
-        // Prevent page scrolling inside iframe
         if (!(e.target instanceof HTMLButtonElement && normCode === 'Space' && settingsOpenRef.current)) {
           e.preventDefault();
         }
@@ -487,25 +560,43 @@ export default function App() {
 
       if (e.repeat) return;
 
-      // Cancel controller remap listening first on Escape
+      // Handle interactive Keyboard Key Remapping capture
+      if (listeningKeyActionRef.current) {
+        e.preventDefault();
+        if (normCode === 'Escape') {
+          setListeningKeyAction(null);
+          return;
+        }
+        const updated = remapKeyboardAction(
+          mappingRef.current,
+          listeningKeyActionRef.current,
+          normCode
+        );
+        handleUpdateControllerMapping(updated);
+        setListeningKeyAction(null);
+        audioRef.current.playSfx('menuSelect');
+        return;
+      }
+
       if (normCode === 'Escape' && listeningActionRef.current) {
         e.preventDefault();
         setListeningAction(null);
         return;
       }
 
-      // Pause / Options toggle
-      if (normCode === 'Escape' || normCode === 'KeyP') {
+      const keyMap = mappingRef.current.keys || createDefaultControllerMapping().keys;
+
+      // Global Command Hub / Map / Missions hotkeys
+      if (normCode === (keyMap.uiPauseMenu || 'Escape') || normCode === 'Escape') {
         e.preventDefault();
         if (settingsOpenRef.current) {
           handleCloseSettings();
         } else {
-          handleOpenSettings();
+          handleOpenHub('settings');
         }
         return;
       }
 
-      // Title Screen Keyboard Navigation
       if (gameStateRef.current === 'title' && !settingsOpenRef.current) {
         if (normCode === 'ArrowUp' || normCode === 'KeyW') {
           e.preventDefault();
@@ -516,31 +607,68 @@ export default function App() {
         } else if (normCode === 'Enter' || normCode === 'Space' || normCode === 'KeyF') {
           e.preventDefault();
           navigateTitleOrModal('confirm');
+        } else if (normCode === (keyMap.uiOpenWorldMap || 'KeyM')) {
+          e.preventDefault();
+          handleOpenHub('map');
+        } else if (normCode === (keyMap.uiOpenMissions || 'KeyJ')) {
+          e.preventDefault();
+          handleOpenHub('missions');
         }
         return;
       }
 
-      // Active 3D Gameplay Keyboard Shortcuts
       if (gameStateRef.current === 'playing' && !settingsOpenRef.current) {
-        if (normCode === 'KeyF' || normCode === 'Enter') {
+        const inCar = Boolean(world.getHudSnapshot().inVehicle);
+
+        // System UI Keys
+        if (normCode === (keyMap.uiOpenWorldMap || 'KeyM')) {
           e.preventDefault();
-          handleToggleEnterExitCar();
-        } else if (normCode === 'KeyR') {
+          handleOpenHub('map');
+          return;
+        }
+        if (normCode === (keyMap.uiOpenMissions || 'KeyJ')) {
           e.preventDefault();
-          handleNextRadioStation();
-        } else if (normCode === 'KeyC' || normCode === 'KeyV') {
-          e.preventDefault();
-          world.cycleCameraView();
-        } else if (normCode === 'KeyE' || normCode === 'KeyH' || normCode === 'KeyG') {
-          e.preventDefault();
-          world.performAttackOrHorn();
-        } else if (normCode === 'KeyM' || normCode === 'Tab') {
+          handleOpenHub('missions');
+          return;
+        }
+        if (normCode === (keyMap.uiRadarZoom || 'Tab')) {
           e.preventDefault();
           setRadarZoomed((z) => !z);
-        } else if (normCode === 'F5' || normCode === 'KeyK') {
+          return;
+        }
+        if (normCode === (keyMap.uiQuickSave || 'KeyK') || normCode === 'F5') {
           e.preventDefault();
           persistProgressNow();
-          world.triggerBanner('PROGRESS SAVED TO MY PC PROFILE', 2.2);
+          world.triggerBanner('PROGRESS SAVED TO PROFILE', 2.2);
+          return;
+        }
+
+        // Context-Specific Keys: In Car vs On Foot
+        if (inCar) {
+          if (normCode === (keyMap.carExitVehicle || 'KeyF') || normCode === 'Enter') {
+            e.preventDefault();
+            handleToggleEnterExitCar();
+          } else if (normCode === (keyMap.carNextRadio || 'KeyR')) {
+            e.preventDefault();
+            handleNextRadioStation();
+          } else if (normCode === (keyMap.carCameraView || 'KeyC')) {
+            e.preventDefault();
+            world.cycleCameraView();
+          } else if (normCode === (keyMap.carHornSiren || 'KeyH')) {
+            e.preventDefault();
+            world.performAttackOrHorn();
+          }
+        } else {
+          if (normCode === (keyMap.footEnterCar || 'KeyF') || normCode === 'Enter') {
+            e.preventDefault();
+            handleToggleEnterExitCar();
+          } else if (normCode === (keyMap.footInteractHustle || 'KeyE')) {
+            e.preventDefault();
+            world.performAttackOrHorn();
+          } else if (normCode === (keyMap.footCameraView || 'KeyC')) {
+            e.preventDefault();
+            world.cycleCameraView();
+          }
         }
       }
     };
@@ -559,7 +687,6 @@ export default function App() {
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onBlur);
 
-    // Fixed 60Hz loop state (Zero allocations per frame)
     let rafId = 0;
     let lastTs = 0;
     let accumMs = 0;
@@ -577,15 +704,14 @@ export default function App() {
       sprint: false,
     };
 
-    // Polls both window.MyPC.gamepad AND native W3C navigator.getGamepads() at 60Hz
     const pollGamepadsAndKeyboard = () => {
       const mypc = window.MyPC;
       const gp = mypc?.gamepad;
       const map = mappingRef.current;
+      const keyMap = map.keys || createDefaultControllerMapping(map.layoutStyle).keys;
       const dz = map.deadzone;
       const keys = keysDownRef.current;
 
-      // Read first active W3C Gamepad if available
       let rawPad: Gamepad | null = null;
       if (typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function') {
         try {
@@ -625,8 +751,6 @@ export default function App() {
         return Math.max(sdkVal, w3cVal, isBtnPressed(idx) ? 1 : 0);
       };
 
-      // Edge-detect all 18 controller buttons so physical gamepads work everywhere
-      // (Title screen, Options modal remapping, and Gameplay)
       for (let b = 0; b < 18; b++) {
         const pressedNow = isBtnPressed(b);
         const wasPressed = prevButtonsRef.current[b];
@@ -647,7 +771,6 @@ export default function App() {
       const rawAx2 = readAxis(2);
       const rawAx3 = readAxis(3);
 
-      // Edge-detect Left Stick for Title Screen & Options Modal navigation
       const stickUp = rawAx1 < -0.58;
       const stickDown = rawAx1 > 0.58;
       const stickLeft = rawAx0 < -0.58;
@@ -669,48 +792,69 @@ export default function App() {
       let rx = applyStickDeadzone(rawAx2, dz);
       const ry = (map.invertLookY ? 1 : -1) * applyStickDeadzone(rawAx3, dz);
 
-      const keyLeft = keys.has('KeyA') || keys.has('KeyQ') || keys.has('ArrowLeft');
-      const keyRight = keys.has('KeyD') || keys.has('ArrowRight');
-      const keyUp = keys.has('KeyW') || keys.has('KeyZ') || keys.has('ArrowUp');
-      const keyDown = keys.has('KeyS') || keys.has('ArrowDown');
+      const inCar = Boolean(worldRef.current?.getHudSnapshot().inVehicle);
 
-      if (mypc?.isDown('left') || isBtnPressed(14) || keyLeft) sx = -1;
-      if (mypc?.isDown('right') || isBtnPressed(15) || keyRight) sx = 1;
-      if (mypc?.isDown('up') || isBtnPressed(12) || keyUp) sy = 1;
-      if (mypc?.isDown('down') || isBtnPressed(13) || keyDown) sy = -1;
+      if (inCar) {
+        const steerLeftKey = keys.has(keyMap.carSteerLeft || 'KeyA') || keys.has('ArrowLeft');
+        const steerRightKey = keys.has(keyMap.carSteerRight || 'KeyD') || keys.has('ArrowRight');
+        const gasKey = keys.has(keyMap.carAccelerate || 'KeyW') || keys.has('ArrowUp');
+        const brakeKey = keys.has(keyMap.carBrakeReverse || 'KeyS') || keys.has('ArrowDown');
 
-      if (keys.has('KeyJ')) rx = -0.85;
-      if (keys.has('KeyL')) rx = 0.85;
+        if (mypc?.isDown('left') || isBtnPressed(map.buttons.carSteerLeft) || steerLeftKey) sx = -1;
+        if (mypc?.isDown('right') || isBtnPressed(map.buttons.carSteerRight) || steerRightKey) sx = 1;
+        if (mypc?.isDown('up') || gasKey) sy = 1;
+        if (mypc?.isDown('down') || brakeKey) sy = -1;
 
-      stepInput.moveX = sx * map.steerSensitivity;
-      stepInput.moveY = sy;
-      stepInput.lookX = rx;
-      stepInput.lookY = ry;
+        stepInput.moveX = sx * map.steerSensitivity;
+        stepInput.moveY = sy;
+        stepInput.lookX = rx;
+        stepInput.lookY = ry;
 
-      const accelBtn = map.buttons.accelerate;
-      const brakeBtn = map.buttons.brake;
-      stepInput.accelerate = Math.max(
-        readBtnValue(accelBtn),
-        mypc?.isDown('up') || mypc?.isDown('jump') || keyUp ? 1 : 0,
-        sy > 0.15 ? sy : 0
-      );
-      stepInput.brake = Math.max(
-        readBtnValue(brakeBtn),
-        mypc?.isDown('down') || keyDown ? 1 : 0,
-        sy < -0.15 ? -sy : 0
-      );
-      stepInput.handbrake = !!(
-        isBtnPressed(map.buttons.handbrake) ||
-        mypc?.isDown('run') ||
-        keys.has('Space')
-      );
-      stepInput.sprint = !!(
-        isBtnPressed(map.buttons.sprint) ||
-        mypc?.isDown('run') ||
-        keys.has('ShiftLeft') ||
-        keys.has('ShiftRight') ||
-        keys.has('Space')
-      );
+        stepInput.accelerate = Math.max(
+          readBtnValue(map.buttons.carAccelerate),
+          mypc?.isDown('up') || mypc?.isDown('jump') || gasKey ? 1 : 0,
+          sy > 0.15 ? sy : 0
+        );
+        stepInput.brake = Math.max(
+          readBtnValue(map.buttons.carBrakeReverse),
+          mypc?.isDown('down') || brakeKey ? 1 : 0,
+          sy < -0.15 ? -sy : 0
+        );
+        stepInput.handbrake = !!(
+          isBtnPressed(map.buttons.carHandbrake) ||
+          mypc?.isDown('run') ||
+          keys.has(keyMap.carHandbrake || 'Space')
+        );
+        stepInput.sprint = !!(
+          isBtnPressed(map.buttons.carNitroBoost) ||
+          keys.has(keyMap.carNitroBoost || 'ShiftLeft') ||
+          keys.has('ShiftRight')
+        );
+      } else {
+        const leftKey = keys.has(keyMap.footMoveLeft || 'KeyA') || keys.has('ArrowLeft');
+        const rightKey = keys.has(keyMap.footMoveRight || 'KeyD') || keys.has('ArrowRight');
+        const fwdKey = keys.has(keyMap.footMoveForward || 'KeyW') || keys.has('ArrowUp');
+        const backKey = keys.has(keyMap.footMoveBackward || 'KeyS') || keys.has('ArrowDown');
+
+        if (mypc?.isDown('left') || isBtnPressed(map.buttons.footMoveLeft) || leftKey) sx = -1;
+        if (mypc?.isDown('right') || isBtnPressed(map.buttons.footMoveRight) || rightKey) sx = 1;
+        if (mypc?.isDown('up') || isBtnPressed(map.buttons.footMoveForward) || fwdKey) sy = 1;
+        if (mypc?.isDown('down') || isBtnPressed(map.buttons.footMoveBackward) || backKey) sy = -1;
+
+        stepInput.moveX = sx * map.steerSensitivity;
+        stepInput.moveY = sy;
+        stepInput.lookX = rx;
+        stepInput.lookY = ry;
+        stepInput.accelerate = 0;
+        stepInput.brake = 0;
+        stepInput.handbrake = false;
+        stepInput.sprint = !!(
+          isBtnPressed(map.buttons.footSprint) ||
+          mypc?.isDown('run') ||
+          keys.has(keyMap.footSprint || 'ShiftLeft') ||
+          keys.has('ShiftRight')
+        );
+      }
     };
 
     const frame = (ts: number) => {
@@ -770,8 +914,6 @@ export default function App() {
       }
     };
 
-    // Dedicated 40ms gamepad poller so controller navigation & button remapping
-    // respond immediately even when the game is paused or software WebGL is busy
     const gamepadTimerId = window.setInterval(() => {
       pollGamepadsAndKeyboard();
     }, 40);
@@ -791,6 +933,9 @@ export default function App() {
       refreshConnectedPads();
     }
 
+    // Always start the 60Hz 3D WebGL render loop immediately so the 3D Tangier world renders right away
+    startLoop();
+
     if (window.MyPC) {
       window.MyPC.init({
         ownMenu: true,
@@ -806,7 +951,11 @@ export default function App() {
             savedGfx &&
             typeof savedGfx.renderScale === 'number' &&
             typeof savedGfx.logicalResolution === 'string'
-              ? savedGfx
+              ? {
+                  ...savedGfx,
+                  textSize: savedGfx.textSize || 'normal',
+                  hudVisibility: getResolvedHudVisibility(savedGfx),
+                }
               : getPresetForMyPCTier(info.quality?.tier);
           graphicsRef.current = initialGfx;
           setGraphics(initialGfx);
@@ -814,8 +963,15 @@ export default function App() {
 
           const savedCtrl = window.MyPC?.load<ControllerMapping | null>(SAVE_KEY_CONTROLLER, null);
           if (savedCtrl && savedCtrl.buttons) {
-            mappingRef.current = savedCtrl;
-            setControllerMapping(savedCtrl);
+            const defCtrl = createDefaultControllerMapping(savedCtrl.layoutStyle);
+            const merged: ControllerMapping = {
+              ...defCtrl,
+              ...savedCtrl,
+              buttons: { ...defCtrl.buttons, ...savedCtrl.buttons },
+              keys: { ...defCtrl.keys, ...(savedCtrl.keys || {}) },
+            };
+            mappingRef.current = merged;
+            setControllerMapping(merged);
           }
 
           const rawSave = window.MyPC?.load<unknown>(SAVE_KEY_PROGRESS, null);
@@ -832,7 +988,7 @@ export default function App() {
               if (item && typeof item.url === 'string') {
                 audioRef.current.addCustomTrack(
                   item.title || `Track ${i + 1}`,
-                  item.artist || 'Solara FM',
+                  item.artist || 'Tangier FM',
                   item.url
                 );
               }
@@ -841,13 +997,16 @@ export default function App() {
           }
 
           window.MyPC?.setMenu([
+            { id: 'map', label: 'Tangier World Map' },
+            { id: 'missions', label: 'Missions Screen' },
+            { id: 'controls', label: 'Controls Mapping' },
             { id: 'save', label: 'Save Progress' },
-            { id: 'settings', label: 'Options & Controls Deck' },
             { id: 'title', label: 'Return to Title Screen' },
           ]);
 
           window.MyPC?.progress(1.0);
           window.MyPC?.ready();
+          startLoop();
         },
         onStart: () => {
           window.focus();
@@ -881,8 +1040,12 @@ export default function App() {
         onMenu: (id) => {
           if (id === 'save') {
             persistProgressNow();
-          } else if (id === 'settings') {
-            handleOpenSettings();
+          } else if (id === 'map') {
+            handleOpenHub('map');
+          } else if (id === 'missions') {
+            handleOpenHub('missions');
+          } else if (id === 'controls' || id === 'settings') {
+            handleOpenHub('controls');
           } else if (id === 'title') {
             handleReturnToTitle();
           }
@@ -898,7 +1061,7 @@ export default function App() {
             } else if (action === 'confirm' || action === 'jump') {
               if (!repeat) navigateTitleOrModal('confirm');
             } else if (action === 'menu') {
-              handleOpenSettings();
+              handleOpenHub('map');
             }
             return;
           }
@@ -920,13 +1083,11 @@ export default function App() {
             if (action === 'confirm') {
               handleToggleEnterExitCar();
             } else if (action === 'cancel' || action === 'menu') {
-              handleOpenSettings();
+              handleOpenHub('map');
             }
           }
         },
       });
-    } else {
-      startLoop();
     }
 
     return () => {
@@ -950,7 +1111,7 @@ export default function App() {
   const activeTrack = radioTracks[currentStationIdx] || DEFAULT_RADIO_TRACKS[0];
 
   return (
-    <main className="relative w-screen h-screen overflow-hidden bg-[#0b0618] select-none">
+    <main className="relative w-screen h-screen overflow-hidden bg-[#061526] select-none">
       {/* Isolated Three.js WebGL Viewport Container */}
       <div
         ref={canvasMountRef}
@@ -958,7 +1119,7 @@ export default function App() {
         className="fixed inset-0 w-full h-full z-0"
       />
 
-      {/* Title Screen Overlay over Live 3D Solara Bay Aerial Camera Tour */}
+      {/* Title Screen Overlay over Live 3D Tangier Aerial Tour */}
       {gameState === 'title' && !settingsOpen && hudSnapshot && (
         <TitleScreen
           lang={lang}
@@ -970,14 +1131,16 @@ export default function App() {
           }}
           onStartNewGame={handleStartNewGame}
           onContinueGame={handleContinueGame}
-          onOpenSettings={handleOpenSettings}
+          onOpenHub={handleOpenHub}
+          graphics={graphics}
+          onChangeTextSize={handleChangeTextSize}
           connectedPads={connectedPads}
           controllerMapping={controllerMapping}
           telemetry={hudSnapshot.telemetry}
         />
       )}
 
-      {/* Active Playing HUD */}
+      {/* Active Playing HUD with Top Compass Arrow & Rotating Road Mini-Map */}
       {(gameState === 'playing' || gameState === 'paused') && hudSnapshot && (
         <GameHud
           snapshot={hudSnapshot}
@@ -985,24 +1148,29 @@ export default function App() {
           controllerMapping={controllerMapping}
           graphics={graphics}
           radarZoomed={radarZoomed}
+          onToggleRadarZoom={() => setRadarZoomed((z) => !z)}
           onToggleEnterExitCar={handleToggleEnterExitCar}
           onNextRadioStation={handleNextRadioStation}
           onTriggerAction={() => worldRef.current?.performAttackOrHorn()}
-          onOpenSettings={handleOpenSettings}
+          onOpenHub={handleOpenHub}
         />
       )}
 
-      {/* 1988 Arcade Pause & Options Deck */}
+      {/* Unified Command Hub: World Map, Missions, Context-Tabbed Controls, Text Size & Radio */}
       {settingsOpen && hudSnapshot && (
         <SettingsModal
           lang={lang}
+          initialTab={hubInitialTab}
           isFromPause={gameState === 'paused'}
+          snapshot={hudSnapshot}
           graphics={graphics}
           onChangeGraphics={handleUpdateGraphics}
           controllerMapping={controllerMapping}
           onChangeControllerMapping={handleUpdateControllerMapping}
           listeningAction={listeningAction}
           setListeningAction={setListeningAction}
+          listeningKeyAction={listeningKeyAction}
+          setListeningKeyAction={setListeningKeyAction}
           lastDetectedButton={lastDetectedButton}
           liveAxes={liveAxes}
           connectedPads={connectedPads}
@@ -1010,6 +1178,8 @@ export default function App() {
           currentStationIndex={currentStationIdx}
           onSelectStation={handleSelectStation}
           onAddCustomTrack={handleAddCustomTrack}
+          onSelectMission={handleSelectMission}
+          onSetCustomWaypoint={handleSetCustomWaypoint}
           telemetry={hudSnapshot.telemetry}
           onSaveProgress={persistProgressNow}
           onClose={handleCloseSettings}
