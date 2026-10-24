@@ -1,10 +1,7 @@
 import * as THREE from 'three';
 import {
   CITY_BUILDING_COLLIDERS,
-  ROAD_AVENUES_X,
-  ROAD_STREETS_Z,
   STORY_MISSIONS,
-  VEHICLE_SPECS,
   clampWorldPosition,
   createInitialProgress,
   getDistrictAt,
@@ -20,9 +17,10 @@ import {
   TANGIER_SECTOR_SIZE,
   TANGIER_WORLD_MAX,
   TANGIER_WORLD_MIN,
-  TANGIER_WORLD_SPAN,
   getRoadNodeById,
   getStreetNameAt,
+  getWorldZoneAt,
+  getWorldZoneById,
 } from './tangierMapData.ts';
 import { createSolaraTextureAtlas, type SolaraTextureAtlas } from './textures.ts';
 import type {
@@ -33,9 +31,21 @@ import type {
   MissionObjective,
   PolyBudgetTier,
   RenderTelemetry,
+  RoadNode,
+  RoadSegment,
   SavedProgress,
   VehicleSpec,
+  WorldZoneId,
+  WorldZoneInfo,
 } from './types.ts';
+
+export interface ZoneTransitionState {
+  active: boolean;
+  partNumber: number;
+  zoneName: string;
+  subtitle: string;
+  progress: number;
+}
 
 export interface WorldHudSnapshot {
   cash: number;
@@ -50,6 +60,8 @@ export interface WorldHudSnapshot {
   playerZ: number;
   playerHeading: number;
   district: DistrictInfo;
+  currentZone: WorldZoneInfo;
+  zoneTransition: ZoneTransitionState | null;
   streetName: string;
   currentMissionIndex: number;
   currentObjectiveIndex: number;
@@ -93,14 +105,70 @@ interface PedestrianActor {
   walkPhase: number;
 }
 
+interface SectorParkPatch {
+  kind: 'turf' | 'bunker' | 'green' | 'water' | 'flag';
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  sx?: number;
+  sz?: number;
+}
+
+interface SectorRoadPiece {
+  cx: number;
+  cz: number;
+  width: number;
+  length: number;
+  angle: number;
+}
+
 interface SpatialWorldSector {
   key: string;
+  sx: number;
+  sz: number;
   centerX: number;
   centerZ: number;
+  zoneId: WorldZoneId;
   group: THREE.Group;
   built: boolean;
   buildings: BuildingCollider[];
+  roadPieces: SectorRoadPiece[];
+  nodes: RoadNode[];
+  parkPatches: SectorParkPatch[];
   treePositions: { x: number; z: number }[];
+}
+
+interface SharedWorldResources {
+  unitBoxGeo: THREE.BoxGeometry;
+  unitPlaneGeo: THREE.PlaneGeometry;
+  unitDiskGeo: THREE.CircleGeometry;
+  unitCylGeo: THREE.CylinderGeometry;
+  unitConeGeo: THREE.ConeGeometry;
+  unitDomeGeo: THREE.SphereGeometry;
+  unitCanopyGeo: THREE.DodecahedronGeometry;
+  curbMat: THREE.MeshStandardMaterial;
+  roadMat: THREE.MeshStandardMaterial;
+  rpAsphaltMat: THREE.MeshStandardMaterial;
+  rpWhiteCurbMat: THREE.MeshStandardMaterial;
+  rpBlueRingMat: THREE.MeshStandardMaterial;
+  rpGrassMat: THREE.MeshStandardMaterial;
+  golfTurfMat: THREE.MeshStandardMaterial;
+  bunkerMat: THREE.MeshStandardMaterial;
+  greenMat: THREE.MeshStandardMaterial;
+  waterMat: THREE.MeshStandardMaterial;
+  cyanFacadeMat: THREE.MeshStandardMaterial;
+  pinkFacadeMat: THREE.MeshStandardMaterial;
+  glassFacadeMat: THREE.MeshStandardMaterial;
+  crownBlueMat: THREE.MeshStandardMaterial;
+  crownAmberMat: THREE.MeshStandardMaterial;
+  mosqueDomeMat: THREE.MeshStandardMaterial;
+  minaretMat: THREE.MeshStandardMaterial;
+  villaRoofMat: THREE.MeshStandardMaterial;
+  palmTrunkMat: THREE.MeshStandardMaterial;
+  palmLeafMat: THREE.MeshStandardMaterial;
+  whiteBasicMat: THREE.MeshBasicMaterial;
+  amberBasicMat: THREE.MeshBasicMaterial;
 }
 
 export class SolaraWorld3D {
@@ -112,19 +180,25 @@ export class SolaraWorld3D {
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer | null = null;
   private atlas: SolaraTextureAtlas;
+  private shared!: SharedWorldResources;
 
+  private localGroundMesh!: THREE.Mesh;
   private sectorRootGroup: THREE.Group;
   private detailGroup: THREE.Group;
   private trafficGroup: THREE.Group;
   private pedGroup: THREE.Group;
-  private oceanMesh: THREE.Mesh | null = null;
   private missionBeaconMesh: THREE.Mesh;
   private customWaypointMesh: THREE.Mesh;
 
   private sectors: Map<string, SpatialWorldSector> = new Map();
+  private buildQueue: SpatialWorldSector[] = [];
   private activeSectorCount = 0;
   private lastStreamCheckX = -9999;
   private lastStreamCheckZ = -9999;
+  private currentZone: WorldZoneInfo = getWorldZoneAt(-35, -6);
+  private zoneTransitionTimer = 0;
+  private zoneTransitionDuration = 0.65;
+  private zoneTransitionTarget: WorldZoneInfo | null = null;
 
   private playerMesh: THREE.Group;
   private playerLeftLeg!: THREE.Mesh;
@@ -175,15 +249,14 @@ export class SolaraWorld3D {
     this.onEvent = onEvent;
 
     this.scene = new THREE.Scene();
-    // Bright Mediterranean Sunlit Tangier Sky
     this.scene.background = new THREE.Color(0x38bdf8);
-    this.scene.fog = new THREE.Fog(0xbae6fd, 170, 520);
+    this.scene.fog = new THREE.Fog(0xbae6fd, 130, 380);
 
-    // Near plane set to 0.65m for high 24-bit depth buffer precision (prevents distant Z-fighting)
-    this.camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.65, 560);
+    this.camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.65, 420);
     this.camera.position.set(-12, 16, 18);
     this.camera.lookAt(-35, 3, -15);
     this.atlas = createSolaraTextureAtlas();
+    this.initSharedResources();
 
     this.sectorRootGroup = new THREE.Group();
     this.detailGroup = new THREE.Group();
@@ -213,12 +286,12 @@ export class SolaraWorld3D {
     }
 
     this.setupLighting();
-    this.buildTangierCity();
+    this.buildLocalGroundPlane();
     this.initializeSpatialSectors();
     this.updateStreamedSectors(this.playerX, this.playerZ, true);
 
     // Mission Objective Golden Beacon Cylinder
-    const beaconGeo = new THREE.CylinderGeometry(3.2, 3.2, 14, 24, 1, true);
+    const beaconGeo = new THREE.CylinderGeometry(3.2, 3.2, 14, 16, 1, true);
     const beaconMat = new THREE.MeshBasicMaterial({
       color: 0xf59e0b,
       transparent: true,
@@ -231,7 +304,7 @@ export class SolaraWorld3D {
     this.scene.add(this.missionBeaconMesh);
 
     // Custom GPS Waypoint Sea-Blue Beacon Cylinder
-    const wpGeo = new THREE.CylinderGeometry(2.4, 2.4, 14, 20, 1, true);
+    const wpGeo = new THREE.CylinderGeometry(2.4, 2.4, 14, 14, 1, true);
     const wpMat = new THREE.MeshBasicMaterial({
       color: 0x00a8e8,
       transparent: true,
@@ -263,285 +336,185 @@ export class SolaraWorld3D {
     this.renderFrame(1 / 60);
   }
 
+  public isInVehicle(): boolean {
+    return Boolean(this.activeVehicle);
+  }
+
+  private initSharedResources(): void {
+    this.shared = {
+      unitBoxGeo: new THREE.BoxGeometry(1, 1, 1),
+      unitPlaneGeo: new THREE.PlaneGeometry(1, 1),
+      unitDiskGeo: new THREE.CircleGeometry(1, 20),
+      unitCylGeo: new THREE.CylinderGeometry(1, 1, 1, 16),
+      unitConeGeo: new THREE.ConeGeometry(1, 1, 4),
+      unitDomeGeo: new THREE.SphereGeometry(1, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+      unitCanopyGeo: new THREE.DodecahedronGeometry(1, 0),
+      curbMat: new THREE.MeshStandardMaterial({
+        color: 0x64748b,
+        roughness: 0.82,
+        polygonOffset: true,
+        polygonOffsetFactor: -5,
+        polygonOffsetUnits: -5,
+      }),
+      roadMat: new THREE.MeshStandardMaterial({
+        map: this.atlas.asphaltRoad,
+        roughness: 0.65,
+        polygonOffset: true,
+        polygonOffsetFactor: -6,
+        polygonOffsetUnits: -6,
+      }),
+      rpAsphaltMat: new THREE.MeshStandardMaterial({
+        color: 0x1e293b,
+        roughness: 0.6,
+        polygonOffset: true,
+        polygonOffsetFactor: -7,
+        polygonOffsetUnits: -7,
+      }),
+      rpWhiteCurbMat: new THREE.MeshStandardMaterial({
+        color: 0xf8fafc,
+        roughness: 0.45,
+      }),
+      rpBlueRingMat: new THREE.MeshStandardMaterial({
+        color: 0x00a8e8,
+        emissive: 0x0077b6,
+        emissiveIntensity: 0.45,
+        roughness: 0.35,
+      }),
+      rpGrassMat: new THREE.MeshStandardMaterial({
+        color: 0x10b981,
+        roughness: 0.65,
+      }),
+      golfTurfMat: new THREE.MeshStandardMaterial({
+        map: this.atlas.beachSand,
+        roughness: 0.78,
+        metalness: 0.05,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      }),
+      bunkerMat: new THREE.MeshStandardMaterial({
+        color: 0xfde68a,
+        roughness: 0.9,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      }),
+      greenMat: new THREE.MeshStandardMaterial({
+        color: 0x10b981,
+        roughness: 0.65,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
+      }),
+      waterMat: new THREE.MeshStandardMaterial({
+        color: 0x0284c7,
+        emissive: 0x0369a1,
+        emissiveIntensity: 0.35,
+        roughness: 0.2,
+        metalness: 0.65,
+        polygonOffset: true,
+        polygonOffsetFactor: -4,
+        polygonOffsetUnits: -4,
+      }),
+      cyanFacadeMat: new THREE.MeshStandardMaterial({
+        map: this.atlas.artDecoFacadeCyan,
+        roughness: 0.45,
+        metalness: 0.15,
+      }),
+      pinkFacadeMat: new THREE.MeshStandardMaterial({
+        map: this.atlas.artDecoFacadePink,
+        roughness: 0.45,
+        metalness: 0.15,
+      }),
+      glassFacadeMat: new THREE.MeshStandardMaterial({
+        map: this.atlas.glassTowerFacade,
+        roughness: 0.35,
+        metalness: 0.25,
+      }),
+      crownBlueMat: new THREE.MeshStandardMaterial({
+        color: 0x0c2d48,
+        emissive: 0x00a8e8,
+        emissiveIntensity: 0.75,
+      }),
+      crownAmberMat: new THREE.MeshStandardMaterial({
+        color: 0x0c2d48,
+        emissive: 0xf59e0b,
+        emissiveIntensity: 0.75,
+      }),
+      mosqueDomeMat: new THREE.MeshStandardMaterial({
+        color: 0x10b981,
+        emissive: 0x059669,
+        emissiveIntensity: 0.35,
+        roughness: 0.3,
+      }),
+      minaretMat: new THREE.MeshStandardMaterial({
+        color: 0xf8fafc,
+        roughness: 0.35,
+      }),
+      villaRoofMat: new THREE.MeshStandardMaterial({
+        color: 0xd97706,
+        roughness: 0.6,
+      }),
+      palmTrunkMat: new THREE.MeshStandardMaterial({
+        map: this.atlas.palmBark,
+        roughness: 0.85,
+      }),
+      palmLeafMat: new THREE.MeshStandardMaterial({
+        map: this.atlas.palmFrond,
+        roughness: 0.55,
+      }),
+      whiteBasicMat: new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      amberBasicMat: new THREE.MeshBasicMaterial({ color: 0xf59e0b }),
+    };
+  }
+
   private setupLighting(): void {
-    const ambient = new THREE.AmbientLight(0xffffff, 0.85);
+    // Lightweight, zero-point-light Mediterranean sunlight setup (cuts fragment shader cost by >55%)
+    const ambient = new THREE.AmbientLight(0xffffff, 0.95);
     this.scene.add(ambient);
 
-    const hemi = new THREE.HemisphereLight(0xe0f2fe, 0xd6d3d1, 1.55);
+    const hemi = new THREE.HemisphereLight(0xe0f2fe, 0xd6d3d1, 1.45);
     this.scene.add(hemi);
 
-    const sun = new THREE.DirectionalLight(0xfffbeb, 2.1);
+    const sun = new THREE.DirectionalLight(0xfffbeb, 1.95);
     sun.position.set(160, 220, -140);
     this.scene.add(sun);
 
     const sunDisk = new THREE.Mesh(
-      new THREE.SphereGeometry(22, 20, 20),
+      new THREE.SphereGeometry(20, 12, 12),
       new THREE.MeshBasicMaterial({ color: 0xfef08a })
     );
-    sunDisk.position.set(260, 250, -320);
+    sunDisk.position.set(240, 240, -300);
     this.scene.add(sunDisk);
-
-    const golfFill = new THREE.PointLight(0x10b981, 1.6, 180);
-    golfFill.position.set(25, 24, -15);
-    this.scene.add(golfFill);
-
-    const mesnanaBlue = new THREE.PointLight(0x00a8e8, 1.8, 180);
-    mesnanaBlue.position.set(-35, 26, -15);
-    this.scene.add(mesnanaBlue);
   }
 
   /**
-   * Builds the Z-Fighting-Free Ground, Golf Course, Lakes, Trimmed Road Segments & Roundabouts.
-   * Every horizontal surface layer uses a strictly increasing Y coordinate AND hardware polygonOffset
-   * AND road segments are trimmed at intersection node radii so no two planes ever overlap at the same depth!
+   * Creates a local 480m x 480m limestone ground plane that follows the player in 32m tile steps
+   * so we don't rasterize a giant 1,100m x 1,100m plane across the entire world.
    */
-  private buildTangierCity(): void {
-    // LAYER 0 (y = -0.12): Base Greater Tangier Warm Moroccan Limestone Urban Ground
-    this.atlas.sidewalkTile.repeat.set(48, 48);
-    const groundGeo = new THREE.PlaneGeometry(TANGIER_WORLD_SPAN + 180, TANGIER_WORLD_SPAN + 180, 4, 4);
+  private buildLocalGroundPlane(): void {
+    this.atlas.sidewalkTile.repeat.set(24, 24);
+    const groundGeo = new THREE.PlaneGeometry(520, 520, 2, 2);
     const groundMat = new THREE.MeshStandardMaterial({
       map: this.atlas.sidewalkTile,
       color: 0xf5f0e6,
-      roughness: 0.84,
-      metalness: 0.04,
+      roughness: 0.86,
+      metalness: 0.02,
     });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.12;
-    this.scene.add(ground);
-
-    // LAYER 1 (y = -0.05): Royal Country Club de Tanger, Cap Spartel & Rahrah Park Turf Planes
-    const golfTurfMat = new THREE.MeshStandardMaterial({
-      map: this.atlas.beachSand,
-      roughness: 0.78,
-      metalness: 0.05,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
-    });
-
-    const golfTurf = new THREE.Mesh(new THREE.PlaneGeometry(94, 102, 4, 4), golfTurfMat);
-    golfTurf.rotation.x = -Math.PI / 2;
-    golfTurf.position.set(20, -0.05, -15);
-    this.scene.add(golfTurf);
-
-    const spartelPark = new THREE.Mesh(new THREE.PlaneGeometry(210, 190, 2, 2), golfTurfMat);
-    spartelPark.rotation.x = -Math.PI / 2;
-    spartelPark.position.set(-300, -0.05, -280);
-    this.scene.add(spartelPark);
-
-    const rahrahPark = new THREE.Mesh(new THREE.PlaneGeometry(130, 125, 2, 2), golfTurfMat);
-    rahrahPark.rotation.x = -Math.PI / 2;
-    rahrahPark.position.set(100, -0.05, 130);
-    this.scene.add(rahrahPark);
-
-    // LAYER 2 (y = -0.02 & y = 0.00): Golf Sand Bunkers & Putting Greens (Flat CircleGeometries, no bottom face fighting)
-    const bunkerMat = new THREE.MeshStandardMaterial({
-      color: 0xfde68a,
-      roughness: 0.9,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
-    const greenMat = new THREE.MeshStandardMaterial({
-      color: 0x10b981,
-      roughness: 0.65,
-      polygonOffset: true,
-      polygonOffsetFactor: -3,
-      polygonOffsetUnits: -3,
-    });
-
-    const golfHoles = [
-      { gx: -5, gz: -52, bx: -11, bz: -46 },
-      { gx: 46, gz: -48, bx: 38, bz: -42 },
-      { gx: 48, gz: 16, bx: 40, bz: 22 },
-      { gx: -5, gz: 16, bx: -12, bz: 10 },
-    ];
-    for (const h of golfHoles) {
-      const bunker = new THREE.Mesh(new THREE.CircleGeometry(3.5, 20), bunkerMat);
-      bunker.rotation.x = -Math.PI / 2;
-      bunker.scale.set(1.3, 0.85, 1);
-      bunker.position.set(h.bx, -0.02, h.bz);
-      this.scene.add(bunker);
-
-      const green = new THREE.Mesh(new THREE.CircleGeometry(5.6, 24), greenMat);
-      green.rotation.x = -Math.PI / 2;
-      green.position.set(h.gx, 0.0, h.gz);
-      this.scene.add(green);
-
-      const pole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.06, 0.06, 2.8, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffffff })
-      );
-      pole.position.set(h.gx, 1.45, h.gz);
-      this.scene.add(pole);
-
-      const flag = new THREE.Mesh(
-        new THREE.BoxGeometry(0.9, 0.5, 0.05),
-        new THREE.MeshBasicMaterial({ color: 0xf59e0b })
-      );
-      flag.position.set(h.gx + 0.45, 2.6, h.gz);
-      this.scene.add(flag);
-    }
-
-    // LAYER 3 (y = 0.015): Rahrah Forest Lake & Royal Golf Water Hazard (Flat CircleGeometry at fixed Y)
-    const waterGeo = new THREE.CircleGeometry(10.5, 28);
-    const waterMat = new THREE.MeshStandardMaterial({
-      color: 0x0284c7,
-      emissive: 0x0369a1,
-      emissiveIntensity: 0.35,
-      roughness: 0.18,
-      metalness: 0.7,
-      polygonOffset: true,
-      polygonOffsetFactor: -4,
-      polygonOffsetUnits: -4,
-    });
-    this.oceanMesh = new THREE.Mesh(waterGeo, waterMat);
-    this.oceanMesh.rotation.x = -Math.PI / 2;
-    this.oceanMesh.scale.set(1.25, 0.8, 1);
-    this.oceanMesh.position.set(48, 0.015, 72);
-    this.scene.add(this.oceanMesh);
-
-    const golfPond = new THREE.Mesh(waterGeo, waterMat);
-    golfPond.rotation.x = -Math.PI / 2;
-    golfPond.scale.set(0.95, 0.62, 1);
-    golfPond.position.set(45, 0.015, -32);
-    this.scene.add(golfPond);
-
-    // LAYER 4 & 5: CONTINUOUS CONNECTED ROAD SEGMENTS
-    // Trimmed at node radii so North-South and West-East segments NEVER overlap at intersections!
-    const curbMat = new THREE.MeshStandardMaterial({
-      color: 0x64748b,
-      roughness: 0.8,
-      polygonOffset: true,
-      polygonOffsetFactor: -5,
-      polygonOffsetUnits: -5,
-    });
-    const roadMat = new THREE.MeshStandardMaterial({
-      map: this.atlas.asphaltRoad,
-      roughness: 0.62,
-      polygonOffset: true,
-      polygonOffsetFactor: -6,
-      polygonOffsetUnits: -6,
-    });
-
-    for (const seg of TANGIER_ROAD_SEGMENTS) {
-      const a = getRoadNodeById(seg.fromNodeId);
-      const b = getRoadNodeById(seg.toNodeId);
-      if (!a || !b) continue;
-
-      const dx = b.x - a.x;
-      const dz = b.z - a.z;
-      const fullLen = Math.hypot(dx, dz);
-      const trimA = a.radius * 0.82;
-      const trimB = b.radius * 0.82;
-      const trimmedLen = Math.max(2, fullLen - trimA - trimB);
-
-      const dirX = dx / (fullLen || 1);
-      const dirZ = dz / (fullLen || 1);
-      const startX = a.x + dirX * trimA;
-      const startZ = a.z + dirZ * trimA;
-      const endX = b.x - dirX * trimB;
-      const endZ = b.z - dirZ * trimB;
-      const cx = (startX + endX) / 2;
-      const cz = (startZ + endZ) / 2;
-      const angle = Math.atan2(dx, dz);
-
-      // Sidewalk / Curb Base (y = 0.035)
-      const sidewalkGeo = new THREE.PlaneGeometry(seg.width + 2.6, trimmedLen);
-      const sidewalk = new THREE.Mesh(sidewalkGeo, curbMat);
-      sidewalk.rotation.x = -Math.PI / 2;
-      sidewalk.rotation.z = angle;
-      sidewalk.position.set(cx, 0.035, cz);
-      this.scene.add(sidewalk);
-
-      // Asphalt Roadway (y = 0.065)
-      const segGeo = new THREE.PlaneGeometry(seg.width, trimmedLen);
-      const roadMesh = new THREE.Mesh(segGeo, roadMat);
-      roadMesh.rotation.x = -Math.PI / 2;
-      roadMesh.rotation.z = angle;
-      roadMesh.position.set(cx, 0.065, cz);
-      this.scene.add(roadMesh);
-    }
-
-    // LAYER 6 (y = 0.04 & y = 0.08): MOROCCAN ROUNDABOUTS (ROND-POINTS) & INTERSECTION JUNCTIONS
-    const rpAsphaltMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b,
-      roughness: 0.6,
-      polygonOffset: true,
-      polygonOffsetFactor: -7,
-      polygonOffsetUnits: -7,
-    });
-    const rpWhiteCurbMat = new THREE.MeshStandardMaterial({
-      color: 0xf8fafc,
-      roughness: 0.4,
-    });
-    const rpBlueRingMat = new THREE.MeshStandardMaterial({
-      color: 0x00a8e8,
-      emissive: 0x0077b6,
-      emissiveIntensity: 0.45,
-      roughness: 0.35,
-    });
-    const rpGrassMat = new THREE.MeshStandardMaterial({
-      color: 0x10b981,
-      roughness: 0.6,
-    });
-
-    for (const node of TANGIER_ROAD_NODES) {
-      // Flat CircleGeometry for outer sidewalk disk (y = 0.04)
-      const outerDisk = new THREE.Mesh(
-        new THREE.CircleGeometry(node.radius + 1.4, 28),
-        curbMat
-      );
-      outerDisk.rotation.x = -Math.PI / 2;
-      outerDisk.position.set(node.x, 0.04, node.z);
-      this.scene.add(outerDisk);
-
-      // Flat CircleGeometry for circular asphalt junction (y = 0.08)
-      const roadDisk = new THREE.Mesh(
-        new THREE.CircleGeometry(node.radius + 0.35, 28),
-        rpAsphaltMat
-      );
-      roadDisk.rotation.x = -Math.PI / 2;
-      roadDisk.position.set(node.x, 0.08, node.z);
-      this.scene.add(roadDisk);
-
-      if (node.isRoundabout) {
-        const islandR = node.radius * 0.36;
-        // Raised White Curb Cylinder: bottom at y = 0.10, top at y = 0.30 (well above roadDisk at 0.08!)
-        const curbRing = new THREE.Mesh(
-          new THREE.CylinderGeometry(islandR + 0.5, islandR + 0.6, 0.2, 24),
-          rpWhiteCurbMat
-        );
-        curbRing.position.set(node.x, 0.2, node.z);
-        this.scene.add(curbRing);
-
-        // Raised Sea-Blue Ring: bottom at y = 0.16, top at y = 0.38
-        const blueRing = new THREE.Mesh(
-          new THREE.CylinderGeometry(islandR + 0.15, islandR + 0.2, 0.22, 24),
-          rpBlueRingMat
-        );
-        blueRing.position.set(node.x, 0.27, node.z);
-        this.scene.add(blueRing);
-
-        // Raised Emerald Grass Mound: bottom at y = 0.22, top at y = 0.46
-        const greenMound = new THREE.Mesh(
-          new THREE.CylinderGeometry(islandR * 0.85, islandR, 0.24, 20),
-          rpGrassMat
-        );
-        greenMound.position.set(node.x, 0.34, node.z);
-        this.scene.add(greenMound);
-      }
-    }
+    this.localGroundMesh = new THREE.Mesh(groundGeo, groundMat);
+    this.localGroundMesh.rotation.x = -Math.PI / 2;
+    this.localGroundMesh.position.set(0, -0.12, 0);
+    this.scene.add(this.localGroundMesh);
   }
 
   /**
-   * Divides the 920m x 920m Greater Tangier world into 160m x 160m Spatial Streaming Sectors.
-   * Buildings and trees are assigned to their sector and only built/rendered when the sector
-   * is within the player's active streaming radius!
+   * Partitions EVERY world element (Roads, Roundabouts, Parks, Lakes, Buildings, Trees)
+   * into 160m x 160m Spatial Streaming Sectors across the 5 Major Map Parts.
+   * Zero global city geometry is mounted until its sector enters the active streaming bubble!
    */
   private initializeSpatialSectors(): void {
     this.sectors.clear();
+    this.buildQueue = [];
     while (this.sectorRootGroup.children.length > 0) {
       this.sectorRootGroup.remove(this.sectorRootGroup.children[0]);
     }
@@ -559,11 +532,17 @@ export class SolaraWorld3D {
         this.sectorRootGroup.add(group);
         sec = {
           key,
+          sx,
+          sz,
           centerX,
           centerZ,
+          zoneId: getWorldZoneAt(centerX, centerZ).id,
           group,
           built: false,
           buildings: [],
+          roadPieces: [],
+          nodes: [],
+          parkPatches: [],
           treePositions: [],
         };
         this.sectors.set(key, sec);
@@ -571,20 +550,82 @@ export class SolaraWorld3D {
       return sec;
     };
 
+    // 1. Partition all Buildings into their respective Sectors
     for (const b of CITY_BUILDING_COLLIDERS) {
       const cx = (b.minX + b.maxX) / 2;
       const cz = (b.minZ + b.maxZ) / 2;
-      const sec = getOrCreateSector(cx, cz);
-      sec.buildings.push(b);
+      getOrCreateSector(cx, cz).buildings.push(b);
     }
 
+    // 2. Partition all Roundabouts & Intersection Nodes into Sectors
     for (const node of TANGIER_ROAD_NODES) {
+      const sec = getOrCreateSector(node.x, node.z);
+      sec.nodes.push(node);
       if (node.isRoundabout) {
-        const sec = getOrCreateSector(node.x, node.z);
         sec.treePositions.push({ x: node.x, z: node.z });
       }
     }
 
+    // 3. Partition all Road Segments (subdivided into <= 80m pieces so long roads stream per-sector!)
+    for (const seg of TANGIER_ROAD_SEGMENTS) {
+      const a = getRoadNodeById(seg.fromNodeId);
+      const b = getRoadNodeById(seg.toNodeId);
+      if (!a || !b) continue;
+
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const fullLen = Math.hypot(dx, dz);
+      const trimA = a.radius * 0.82;
+      const trimB = b.radius * 0.82;
+      const trimmedLen = Math.max(2, fullLen - trimA - trimB);
+
+      const dirX = dx / (fullLen || 1);
+      const dirZ = dz / (fullLen || 1);
+      const startX = a.x + dirX * trimA;
+      const startZ = a.z + dirZ * trimA;
+      const angle = Math.atan2(dx, dz);
+
+      const numSubPieces = Math.max(1, Math.ceil(trimmedLen / 75));
+      const pieceLen = trimmedLen / numSubPieces;
+
+      for (let p = 0; p < numSubPieces; p++) {
+        const distAlong = (p + 0.5) * pieceLen;
+        const cx = startX + dirX * distAlong;
+        const cz = startZ + dirZ * distAlong;
+        getOrCreateSector(cx, cz).roadPieces.push({
+          cx,
+          cz,
+          width: seg.width,
+          length: pieceLen + 0.15,
+          angle,
+        });
+      }
+    }
+
+    // 4. Partition Parks, Royal Golf Fairways, Sand Bunkers, Putting Greens & Lakes into Sectors
+    const parks: SectorParkPatch[] = [
+      { kind: 'turf', x: 20, z: -15, w: 94, d: 102 },
+      { kind: 'turf', x: -300, z: -280, w: 210, d: 190 },
+      { kind: 'turf', x: 100, z: 130, w: 130, d: 125 },
+      { kind: 'water', x: 48, z: 72, w: 10.5, d: 10.5, sx: 1.25, sz: 0.8 },
+      { kind: 'water', x: 45, z: -32, w: 10.5, d: 10.5, sx: 0.95, sz: 0.62 },
+    ];
+    const golfHoles = [
+      { gx: -5, gz: -52, bx: -11, bz: -46 },
+      { gx: 46, gz: -48, bx: 38, bz: -42 },
+      { gx: 48, gz: 16, bx: 40, bz: 22 },
+      { gx: -5, gz: 16, bx: -12, bz: 10 },
+    ];
+    for (const h of golfHoles) {
+      parks.push({ kind: 'bunker', x: h.bx, z: h.bz, w: 3.5, d: 3.5, sx: 1.3, sz: 0.85 });
+      parks.push({ kind: 'green', x: h.gx, z: h.gz, w: 5.6, d: 5.6 });
+      parks.push({ kind: 'flag', x: h.gx, z: h.gz, w: 1, d: 1 });
+    }
+    for (const pk of parks) {
+      getOrCreateSector(pk.x, pk.z).parkPatches.push(pk);
+    }
+
+    // 5. Partition Park Trees into Sectors
     const parkTrees = [
       { x: -12, z: -58 },
       { x: 5, z: -58 },
@@ -604,21 +645,137 @@ export class SolaraWorld3D {
       { x: 125, z: 145 },
     ];
     for (const pt of parkTrees) {
-      const sec = getOrCreateSector(pt.x, pt.z);
-      sec.treePositions.push(pt);
+      getOrCreateSector(pt.x, pt.z).treePositions.push(pt);
     }
   }
 
   /**
-   * Lazily instantiates 3D building & palm meshes for a sector the first time the player
-   * enters its streaming radius.
+   * Builds a single 160m x 160m sector's Roads, Roundabouts, Parks, Buildings & Trees
+   * using ONLY shared unit geometries and shared materials (zero new shader/material allocations!).
    */
   private buildSectorGeometry(sec: SpatialWorldSector): void {
     if (sec.built) return;
     sec.built = true;
 
-    const baseY = 0.08; // Lifted above ground plane so bottom faces never Z-fight
+    const s = this.shared;
+    const baseY = 0.08;
 
+    // 1. Sector Park Turfs, Bunkers, Greens & Lakes
+    for (const pk of sec.parkPatches) {
+      if (pk.kind === 'turf') {
+        const turf = new THREE.Mesh(s.unitPlaneGeo, s.golfTurfMat);
+        turf.rotation.x = -Math.PI / 2;
+        turf.scale.set(pk.w, pk.d, 1);
+        turf.position.set(pk.x, -0.05, pk.z);
+        turf.matrixAutoUpdate = false;
+        turf.updateMatrix();
+        sec.group.add(turf);
+      } else if (pk.kind === 'bunker') {
+        const bunker = new THREE.Mesh(s.unitDiskGeo, s.bunkerMat);
+        bunker.rotation.x = -Math.PI / 2;
+        bunker.scale.set(pk.w * (pk.sx || 1), pk.d * (pk.sz || 1), 1);
+        bunker.position.set(pk.x, -0.02, pk.z);
+        bunker.matrixAutoUpdate = false;
+        bunker.updateMatrix();
+        sec.group.add(bunker);
+      } else if (pk.kind === 'green') {
+        const green = new THREE.Mesh(s.unitDiskGeo, s.greenMat);
+        green.rotation.x = -Math.PI / 2;
+        green.scale.set(pk.w, pk.d, 1);
+        green.position.set(pk.x, 0.0, pk.z);
+        green.matrixAutoUpdate = false;
+        green.updateMatrix();
+        sec.group.add(green);
+      } else if (pk.kind === 'water') {
+        const water = new THREE.Mesh(s.unitDiskGeo, s.waterMat);
+        water.rotation.x = -Math.PI / 2;
+        water.scale.set(pk.w * (pk.sx || 1), pk.d * (pk.sz || 1), 1);
+        water.position.set(pk.x, 0.015, pk.z);
+        water.matrixAutoUpdate = false;
+        water.updateMatrix();
+        sec.group.add(water);
+      } else if (pk.kind === 'flag') {
+        const pole = new THREE.Mesh(s.unitCylGeo, s.whiteBasicMat);
+        pole.scale.set(0.06, 2.8, 0.06);
+        pole.position.set(pk.x, 1.45, pk.z);
+        pole.matrixAutoUpdate = false;
+        pole.updateMatrix();
+        sec.group.add(pole);
+
+        const flag = new THREE.Mesh(s.unitBoxGeo, s.amberBasicMat);
+        flag.scale.set(0.9, 0.5, 0.05);
+        flag.position.set(pk.x + 0.45, 2.6, pk.z);
+        flag.matrixAutoUpdate = false;
+        flag.updateMatrix();
+        sec.group.add(flag);
+      }
+    }
+
+    // 2. Sector Road Segments (Sidewalks + Asphalt)
+    for (const rp of sec.roadPieces) {
+      const sidewalk = new THREE.Mesh(s.unitPlaneGeo, s.curbMat);
+      sidewalk.rotation.x = -Math.PI / 2;
+      sidewalk.rotation.z = rp.angle;
+      sidewalk.scale.set(rp.width + 2.6, rp.length, 1);
+      sidewalk.position.set(rp.cx, 0.035, rp.cz);
+      sidewalk.matrixAutoUpdate = false;
+      sidewalk.updateMatrix();
+      sec.group.add(sidewalk);
+
+      const roadMesh = new THREE.Mesh(s.unitPlaneGeo, s.roadMat);
+      roadMesh.rotation.x = -Math.PI / 2;
+      roadMesh.rotation.z = rp.angle;
+      roadMesh.scale.set(rp.width, rp.length, 1);
+      roadMesh.position.set(rp.cx, 0.065, rp.cz);
+      roadMesh.matrixAutoUpdate = false;
+      roadMesh.updateMatrix();
+      sec.group.add(roadMesh);
+    }
+
+    // 3. Sector Roundabout & Intersection Nodes
+    for (const node of sec.nodes) {
+      const outerDisk = new THREE.Mesh(s.unitDiskGeo, s.curbMat);
+      outerDisk.rotation.x = -Math.PI / 2;
+      outerDisk.scale.set(node.radius + 1.4, node.radius + 1.4, 1);
+      outerDisk.position.set(node.x, 0.04, node.z);
+      outerDisk.matrixAutoUpdate = false;
+      outerDisk.updateMatrix();
+      sec.group.add(outerDisk);
+
+      const roadDisk = new THREE.Mesh(s.unitDiskGeo, s.rpAsphaltMat);
+      roadDisk.rotation.x = -Math.PI / 2;
+      roadDisk.scale.set(node.radius + 0.35, node.radius + 0.35, 1);
+      roadDisk.position.set(node.x, 0.08, node.z);
+      roadDisk.matrixAutoUpdate = false;
+      roadDisk.updateMatrix();
+      sec.group.add(roadDisk);
+
+      if (node.isRoundabout) {
+        const islandR = node.radius * 0.36;
+        const curbRing = new THREE.Mesh(s.unitCylGeo, s.rpWhiteCurbMat);
+        curbRing.scale.set(islandR + 0.55, 0.2, islandR + 0.55);
+        curbRing.position.set(node.x, 0.2, node.z);
+        curbRing.matrixAutoUpdate = false;
+        curbRing.updateMatrix();
+        sec.group.add(curbRing);
+
+        const blueRing = new THREE.Mesh(s.unitCylGeo, s.rpBlueRingMat);
+        blueRing.scale.set(islandR + 0.18, 0.22, islandR + 0.18);
+        blueRing.position.set(node.x, 0.27, node.z);
+        blueRing.matrixAutoUpdate = false;
+        blueRing.updateMatrix();
+        sec.group.add(blueRing);
+
+        const greenMound = new THREE.Mesh(s.unitCylGeo, s.rpGrassMat);
+        greenMound.scale.set(islandR * 0.9, 0.24, islandR * 0.9);
+        greenMound.position.set(node.x, 0.34, node.z);
+        greenMound.matrixAutoUpdate = false;
+        greenMound.updateMatrix();
+        sec.group.add(greenMound);
+      }
+    }
+
+    // 4. Sector Buildings (using shared geometries & shared materials!)
     for (let i = 0; i < sec.buildings.length; i++) {
       const col = sec.buildings[i];
       const cx = (col.minX + col.maxX) / 2;
@@ -627,173 +784,247 @@ export class SolaraWorld3D {
       const d = col.maxZ - col.minZ - 0.4;
       const h = col.height || 15;
 
-      const bGroup = new THREE.Group();
-      bGroup.position.set(cx, baseY, cz);
-
       if (col.style === 'mosque') {
-        const bodyMat = new THREE.MeshStandardMaterial({
-          map: this.atlas.artDecoFacadeCyan,
-          roughness: 0.4,
-        });
-        const hall = new THREE.Mesh(new THREE.BoxGeometry(w, 9, d), bodyMat);
-        hall.position.y = 4.5;
-        bGroup.add(hall);
+        const hall = new THREE.Mesh(s.unitBoxGeo, s.cyanFacadeMat);
+        hall.scale.set(w, 9, d);
+        hall.position.set(cx, baseY + 4.5, cz);
+        hall.matrixAutoUpdate = false;
+        hall.updateMatrix();
+        sec.group.add(hall);
 
-        const dome = new THREE.Mesh(
-          new THREE.SphereGeometry(Math.min(w, d) * 0.32, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
-          new THREE.MeshStandardMaterial({
-            color: 0x10b981,
-            emissive: 0x059669,
-            emissiveIntensity: 0.35,
-            roughness: 0.3,
-          })
-        );
-        dome.position.set(0, 9.05, 0);
-        bGroup.add(dome);
+        const domeR = Math.min(w, d) * 0.32;
+        const dome = new THREE.Mesh(s.unitDomeGeo, s.mosqueDomeMat);
+        dome.scale.set(domeR, domeR, domeR);
+        dome.position.set(cx, baseY + 9.05, cz);
+        dome.matrixAutoUpdate = false;
+        dome.updateMatrix();
+        sec.group.add(dome);
 
-        const minaret = new THREE.Mesh(
-          new THREE.BoxGeometry(3.4, 24, 3.4),
-          new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.35 })
-        );
-        minaret.position.set(w * 0.28, 12.05, d * 0.28);
-        bGroup.add(minaret);
+        const minaret = new THREE.Mesh(s.unitBoxGeo, s.minaretMat);
+        minaret.scale.set(3.4, 24, 3.4);
+        minaret.position.set(cx + w * 0.28, baseY + 12.05, cz + d * 0.28);
+        minaret.matrixAutoUpdate = false;
+        minaret.updateMatrix();
+        sec.group.add(minaret);
 
-        const lantern = new THREE.Mesh(
-          new THREE.BoxGeometry(2.0, 3.2, 2.0),
-          new THREE.MeshStandardMaterial({
-            color: 0x00a8e8,
-            emissive: 0x00a8e8,
-            emissiveIntensity: 0.65,
-          })
-        );
-        lantern.position.set(w * 0.28, 25.75, d * 0.28);
-        bGroup.add(lantern);
+        const lantern = new THREE.Mesh(s.unitBoxGeo, s.crownBlueMat);
+        lantern.scale.set(2.0, 3.2, 2.0);
+        lantern.position.set(cx + w * 0.28, baseY + 25.75, cz + d * 0.28);
+        lantern.matrixAutoUpdate = false;
+        lantern.updateMatrix();
+        sec.group.add(lantern);
       } else if (col.style === 'boubana-villa' || col.style === 'clubhouse') {
-        const villaMat = new THREE.MeshStandardMaterial({
-          map: this.atlas.artDecoFacadePink,
-          roughness: 0.45,
-        });
-        const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), villaMat);
-        body.position.y = h / 2;
-        bGroup.add(body);
+        const body = new THREE.Mesh(s.unitBoxGeo, s.pinkFacadeMat);
+        body.scale.set(w, h, d);
+        body.position.set(cx, baseY + h / 2, cz);
+        body.matrixAutoUpdate = false;
+        body.updateMatrix();
+        sec.group.add(body);
 
-        const roof = new THREE.Mesh(
-          new THREE.ConeGeometry(Math.max(w, d) * 0.62, 3.6, 4),
-          new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.6 })
-        );
+        const roofR = Math.max(w, d) * 0.62;
+        const roof = new THREE.Mesh(s.unitConeGeo, s.villaRoofMat);
+        roof.scale.set(roofR, 3.6, roofR);
         roof.rotation.y = Math.PI / 4;
-        roof.position.y = h + 1.85;
-        bGroup.add(roof);
+        roof.position.set(cx, baseY + h + 1.85, cz);
+        roof.matrixAutoUpdate = false;
+        roof.updateMatrix();
+        sec.group.add(roof);
       } else {
-        const tex =
+        const mainMat =
           col.style === 'socco-plaza' || col.style === 'garage'
-            ? this.atlas.glassTowerFacade
+            ? s.glassFacadeMat
             : i % 2 === 0
-              ? this.atlas.artDecoFacadeCyan
-              : this.atlas.artDecoFacadePink;
+              ? s.cyanFacadeMat
+              : s.pinkFacadeMat;
 
-        const mainGeo = new THREE.BoxGeometry(w, h, d, 2, 2, 2);
-        const mainMat = new THREE.MeshStandardMaterial({
-          map: tex,
-          roughness: 0.42,
-          metalness: 0.2,
-        });
-        const mainMesh = new THREE.Mesh(mainGeo, mainMat);
-        mainMesh.position.y = h / 2;
-        bGroup.add(mainMesh);
+        const mainMesh = new THREE.Mesh(s.unitBoxGeo, mainMat);
+        mainMesh.scale.set(w, h, d);
+        mainMesh.position.set(cx, baseY + h / 2, cz);
+        mainMesh.matrixAutoUpdate = false;
+        mainMesh.updateMatrix();
+        sec.group.add(mainMesh);
 
-        // Crown lifted +0.12m above roof top so bottom of crown never Z-fights with roof top
-        const crownColor = col.style === 'garage' ? 0xf59e0b : 0x00a8e8;
-        const crown = new THREE.Mesh(
-          new THREE.BoxGeometry(w * 0.88, 1.2, d * 0.88),
-          new THREE.MeshStandardMaterial({
-            color: 0x0c2d48,
-            emissive: crownColor,
-            emissiveIntensity: 0.75,
-          })
-        );
-        crown.position.set(0, h + 0.72, 0);
-        bGroup.add(crown);
+        const crownMat = col.style === 'garage' ? s.crownAmberMat : s.crownBlueMat;
+        const crown = new THREE.Mesh(s.unitBoxGeo, crownMat);
+        crown.scale.set(w * 0.88, 1.2, d * 0.88);
+        crown.position.set(cx, baseY + h + 0.72, cz);
+        crown.matrixAutoUpdate = false;
+        crown.updateMatrix();
+        sec.group.add(crown);
       }
-
-      sec.group.add(bGroup);
     }
 
-    // Build Sector Palms & Pines
-    const palmTrunkMat = new THREE.MeshStandardMaterial({
-      map: this.atlas.palmBark,
-      roughness: 0.85,
-    });
-    const palmLeafMat = new THREE.MeshStandardMaterial({
-      map: this.atlas.palmFrond,
-      roughness: 0.55,
-      side: THREE.DoubleSide,
-    });
-
+    // 5. Sector Palm Trees (2 ultra-fast shared-geometry meshes per tree instead of 10!)
     for (const loc of sec.treePositions) {
-      const palm = new THREE.Group();
-      palm.position.set(loc.x, 0.35, loc.z);
+      const trunk = new THREE.Mesh(s.unitCylGeo, s.palmTrunkMat);
+      trunk.scale.set(0.24, 4.4, 0.24);
+      trunk.position.set(loc.x, 2.55, loc.z);
+      trunk.matrixAutoUpdate = false;
+      trunk.updateMatrix();
+      sec.group.add(trunk);
 
-      for (let s = 0; s < 4; s++) {
-        const segGeo = new THREE.CylinderGeometry(
-          0.25 - s * 0.025,
-          0.29 - s * 0.025,
-          1.2,
-          10,
-          1
-        );
-        const seg = new THREE.Mesh(segGeo, palmTrunkMat);
-        seg.position.set(Math.sin(s * 0.2) * 0.2, s * 1.1 + 0.6, 0);
-        palm.add(seg);
-      }
-
-      const topY = 4.7;
-      for (let f = 0; f < 6; f++) {
-        const angle = (f / 6) * Math.PI * 2;
-        const frondGeo = new THREE.SphereGeometry(1.3, 10, 6);
-        frondGeo.scale(0.28, 0.08, 1.3);
-        const frond = new THREE.Mesh(frondGeo, palmLeafMat);
-        frond.position.set(Math.sin(angle) * 1.0, topY, Math.cos(angle) * 1.0);
-        frond.rotation.y = angle;
-        frond.rotation.x = 0.4;
-        palm.add(frond);
-      }
-
-      sec.group.add(palm);
+      const canopy = new THREE.Mesh(s.unitCanopyGeo, s.palmLeafMat);
+      canopy.scale.set(2.1, 0.95, 2.1);
+      canopy.position.set(loc.x, 4.9, loc.z);
+      canopy.matrixAutoUpdate = false;
+      canopy.updateMatrix();
+      sec.group.add(canopy);
     }
   }
 
   /**
-   * Smart Sector Streaming: Activates & lazily builds only the sectors within streaming radius
-   * of (focusX, focusZ), hiding distant sectors so the large map renders at 60 FPS.
+   * Unloads a distant sector from the active scene graph so out-of-range parts of the map
+   * consume zero scene traversal or draw calls.
    */
-  private updateStreamedSectors(focusX: number, focusZ: number, force = false): void {
+  private unloadSectorGeometry(sec: SpatialWorldSector): void {
+    if (!sec.built) return;
+    while (sec.group.children.length > 0) {
+      sec.group.remove(sec.group.children[0]);
+    }
+    sec.built = false;
+    sec.group.visible = false;
+  }
+
+  /**
+   * Smart Predictive Sector & Zone Streaming:
+   * - Keeps only the immediate neighborhood around the player AND a forward lookahead point
+   *   in the direction of travel mounted in 3D.
+   * - Preloads approaching boundary sectors one-by-one and unloads distant sectors.
+   */
+  private updateStreamedSectors(focusX: number, focusZ: number, forceImmediate = false): void {
+    // Move local ground plane in 32m steps so it always stays under the player
+    if (this.localGroundMesh) {
+      this.localGroundMesh.position.x = Math.round(focusX / 32) * 32;
+      this.localGroundMesh.position.z = Math.round(focusZ / 32) * 32;
+    }
+
+    // Detect if the player crossed into a new Major Map Part (Parts 1–5)
+    const nextZone = getWorldZoneAt(focusX, focusZ);
+    if (nextZone.id !== this.currentZone.id) {
+      this.currentZone = nextZone;
+      if (!forceImmediate) {
+        this.zoneTransitionTarget = nextZone;
+        this.zoneTransitionDuration = 0.65;
+        this.zoneTransitionTimer = 0.65;
+        this.triggerBanner(
+          `ENTERING ${nextZone.shortLabel} — ${nextZone.subtitle.toUpperCase()}`,
+          3.0
+        );
+      }
+    }
+
     if (
-      !force &&
-      Math.hypot(focusX - this.lastStreamCheckX, focusZ - this.lastStreamCheckZ) < 18
+      !forceImmediate &&
+      Math.hypot(focusX - this.lastStreamCheckX, focusZ - this.lastStreamCheckZ) < 16
     ) {
+      this.processBuildQueueStep();
       return;
     }
     this.lastStreamCheckX = focusX;
     this.lastStreamCheckZ = focusZ;
 
-    const streamRadius = Math.max(220, this.settings.drawDistance + 125);
+    // Tight, tier-scaled active sector streaming radius (never loads the whole world!)
+    const tier = this.settings.polyBudgetTier;
+    const baseRadius =
+      tier === 'low'
+        ? 125
+        : tier === 'medium'
+          ? 150
+          : tier === 'high'
+            ? 175
+            : tier === 'ultra'
+              ? 195
+              : 215;
+
+    const unloadRadius = baseRadius + 85;
+
+    // Predictive lookahead point 48m ahead of the player's heading to preload the next part before arrival
+    const lookAheadX = focusX + Math.sin(this.playerHeading) * 48;
+    const lookAheadZ = focusZ + Math.cos(this.playerHeading) * 48;
+
     let activeCount = 0;
+    this.buildQueue = [];
 
     for (const sec of this.sectors.values()) {
-      const dist = Math.hypot(sec.centerX - focusX, sec.centerZ - focusZ);
-      if (dist <= streamRadius) {
+      const distPlayer = Math.hypot(sec.centerX - focusX, sec.centerZ - focusZ);
+      const distAhead = Math.hypot(sec.centerX - lookAheadX, sec.centerZ - lookAheadZ);
+      const effectiveDist = Math.min(distPlayer, distAhead);
+
+      if (effectiveDist <= baseRadius) {
         if (!sec.built) {
-          this.buildSectorGeometry(sec);
+          if (forceImmediate || distPlayer < 95) {
+            this.buildSectorGeometry(sec);
+          } else {
+            this.buildQueue.push(sec);
+          }
         }
-        sec.group.visible = true;
-        activeCount++;
+        sec.group.visible = sec.built;
+        if (sec.built) activeCount++;
       } else {
         sec.group.visible = false;
+        if (sec.built && distPlayer > unloadRadius) {
+          this.unloadSectorGeometry(sec);
+        }
       }
     }
 
     this.activeSectorCount = activeCount;
+    this.processBuildQueueStep();
+  }
+
+  /**
+   * Builds at most 1 preloaded boundary sector per frame during driving so there is zero frame hitch.
+   */
+  private processBuildQueueStep(): void {
+    if (this.buildQueue.length === 0) return;
+    const nextSec = this.buildQueue.shift();
+    if (nextSec && !nextSec.built) {
+      this.buildSectorGeometry(nextSec);
+      nextSec.group.visible = true;
+      this.activeSectorCount++;
+    }
+  }
+
+  /**
+   * Fast-Travels the player (and their vehicle if driving) directly to one of the 5 Map Parts
+   * (Part 1: Mesnana/Kawassim, Part 2: Boubana, Part 3: Cap Spartel, Part 4: Boukhalef/Rahrah, Part 5: Malabata),
+   * unloading old sectors and displaying a clean Zone Loading Transition.
+   */
+  public fastTravelToZone(zoneId: WorldZoneId): void {
+    const targetZone = getWorldZoneById(zoneId);
+    this.currentZone = targetZone;
+    this.zoneTransitionTarget = targetZone;
+    this.zoneTransitionDuration = 0.85;
+    this.zoneTransitionTimer = 0.85;
+
+    // Unload all currently built sectors from the previous zone first
+    for (const sec of this.sectors.values()) {
+      if (sec.built) {
+        this.unloadSectorGeometry(sec);
+      }
+    }
+
+    const safe = resolveCircleBuildingCollisions(targetZone.spawnX, targetZone.spawnZ, 1.2);
+    this.playerX = safe.x;
+    this.playerZ = safe.z;
+    this.playerHeading = targetZone.spawnHeading;
+
+    if (this.activeVehicle) {
+      this.activeVehicle.x = safe.x;
+      this.activeVehicle.z = safe.z;
+      this.activeVehicle.heading = targetZone.spawnHeading;
+      this.activeVehicle.speed = 0;
+      this.activeVehicle.mesh.position.set(safe.x, 0.08, safe.z);
+      this.activeVehicle.mesh.rotation.y = targetZone.spawnHeading;
+    } else {
+      this.playerMesh.position.set(safe.x, 0.08, safe.z);
+      this.playerMesh.rotation.y = targetZone.spawnHeading;
+    }
+
+    // Immediately build only the target zone's spawn sectors
+    this.updateStreamedSectors(this.playerX, this.playerZ, true);
+    this.snapCameraBehindPlayer();
+    this.triggerBanner(`LOADED ${targetZone.shortLabel} — ${targetZone.subtitle.toUpperCase()}`, 3.2);
   }
 
   private rebuildTierDetailGeometry(tier: PolyBudgetTier): void {
@@ -803,9 +1034,9 @@ export class SolaraWorld3D {
     }
 
     if (tier === 'high' || tier === 'ultra' || tier === 'super') {
-      const archCount = tier === 'super' ? 18 : tier === 'ultra' ? 12 : 6;
-      const torusRadial = tier === 'super' ? 28 : tier === 'ultra' ? 20 : 12;
-      const torusTubular = tier === 'super' ? 56 : tier === 'ultra' ? 38 : 22;
+      const archCount = tier === 'super' ? 12 : tier === 'ultra' ? 8 : 4;
+      const torusRadial = tier === 'super' ? 18 : 12;
+      const torusTubular = tier === 'super' ? 32 : 20;
 
       for (let a = 0; a < archCount; a++) {
         const archGeo = new THREE.TorusGeometry(6.8, 0.28, torusRadial, torusTubular, Math.PI);
@@ -832,7 +1063,7 @@ export class SolaraWorld3D {
   private createSculptedCarMesh(spec: VehicleSpec, tier: PolyBudgetTier): THREE.Group {
     const car = new THREE.Group();
     const wheelSegs =
-      tier === 'super' ? 26 : tier === 'ultra' ? 20 : tier === 'high' ? 16 : 12;
+      tier === 'super' ? 20 : tier === 'ultra' ? 16 : tier === 'high' ? 12 : 8;
 
     const tireGeo = new THREE.CylinderGeometry(0.37, 0.37, 0.3, wheelSegs);
     tireGeo.rotateZ(Math.PI / 2);
@@ -846,19 +1077,19 @@ export class SolaraWorld3D {
     // Dedicated 2019 Citroën C3 (Polar White Body + Contrast Sport Red Top Roof + Airbump Side Trim)
     if (spec.id === 'citroen-c3-2019') {
       const whiteBodyMat = new THREE.MeshStandardMaterial({
-        color: 0xf8fafc, // Crisp Polar White
+        color: 0xf8fafc,
         roughness: 0.2,
         metalness: 0.35,
       });
       const redRoofMat = new THREE.MeshStandardMaterial({
-        color: 0xdc2626, // Vibrant Citroën Sport Red Roof & Pillars
+        color: 0xdc2626,
         emissive: 0x7f1d1d,
         emissiveIntensity: 0.18,
         roughness: 0.24,
         metalness: 0.45,
       });
       const blackCladdingMat = new THREE.MeshStandardMaterial({
-        color: 0x18181b, // Matte black Airbump & wheel-arch cladding
+        color: 0x18181b,
         roughness: 0.78,
         metalness: 0.1,
       });
@@ -868,7 +1099,6 @@ export class SolaraWorld3D {
         metalness: 0.9,
       });
 
-      // 1. Matte black lower chassis skirt & bumpers
       const skirt = new THREE.Mesh(
         new THREE.BoxGeometry(1.98, 0.22, 4.06),
         blackCladdingMat
@@ -876,15 +1106,13 @@ export class SolaraWorld3D {
       skirt.position.set(0, 0.32, 0);
       car.add(skirt);
 
-      // 2. Main Polar White Hatchback Lower Body & Doors
       const mainBody = new THREE.Mesh(
-        new THREE.BoxGeometry(1.94, 0.56, 3.98, 2, 2, 4),
+        new THREE.BoxGeometry(1.94, 0.56, 3.98),
         whiteBodyMat
       );
       mainBody.position.set(0, 0.64, 0);
       car.add(mainBody);
 
-      // Rounded High Front Clam-Shell Hood (characteristic 2019 C3 front profile)
       const hood = new THREE.Mesh(
         new THREE.BoxGeometry(1.82, 0.18, 1.18),
         whiteBodyMat
@@ -893,7 +1121,6 @@ export class SolaraWorld3D {
       hood.rotation.x = 0.08;
       car.add(hood);
 
-      // 3. Signature Citroën Black Airbump® Side Door Panels with Red Capsule Accent!
       const airbumpLeft = new THREE.Mesh(
         new THREE.BoxGeometry(0.06, 0.18, 1.75),
         blackCladdingMat
@@ -906,7 +1133,6 @@ export class SolaraWorld3D {
       airbumpRight.position.set(0.97, 0.52, 0.05);
       car.add(airbumpLeft, airbumpRight);
 
-      // Iconic Red Airbump Front Capsule Ring on both sides
       const redPodGeo = new THREE.BoxGeometry(0.08, 0.12, 0.36);
       const redPodLeft = new THREE.Mesh(redPodGeo, redRoofMat);
       redPodLeft.position.set(-0.975, 0.52, 0.62);
@@ -914,7 +1140,6 @@ export class SolaraWorld3D {
       redPodRight.position.set(0.975, 0.52, 0.62);
       car.add(redPodLeft, redPodRight);
 
-      // 4. Tinted Hatchback Cabin Greenhouse
       const cabinGlass = new THREE.Mesh(
         new THREE.BoxGeometry(1.68, 0.48, 2.18),
         glassMat
@@ -922,7 +1147,6 @@ export class SolaraWorld3D {
       cabinGlass.position.set(0, 1.15, -0.22);
       car.add(cabinGlass);
 
-      // 5. Contrast SPORT RED Floating Top Roof, Red Pillars & Red Rear Roof Spoiler
       const redRoofTop = new THREE.Mesh(
         new THREE.BoxGeometry(1.74, 0.14, 2.28),
         redRoofMat
@@ -930,7 +1154,6 @@ export class SolaraWorld3D {
       redRoofTop.position.set(0, 1.42, -0.24);
       car.add(redRoofTop);
 
-      // Red Roof Crown / Rounded Cap so it stands out from all camera angles
       const redRoofCrown = new THREE.Mesh(
         new THREE.BoxGeometry(1.58, 0.08, 2.08),
         redRoofMat
@@ -938,7 +1161,6 @@ export class SolaraWorld3D {
       redRoofCrown.position.set(0, 1.5, -0.24);
       car.add(redRoofCrown);
 
-      // Red Rear Hatchback Spoiler Wing
       const rearSpoiler = new THREE.Mesh(
         new THREE.BoxGeometry(1.66, 0.08, 0.34),
         redRoofMat
@@ -946,7 +1168,6 @@ export class SolaraWorld3D {
       rearSpoiler.position.set(0, 1.46, -1.42);
       car.add(rearSpoiler);
 
-      // Red Side Wing Mirrors
       const mirrorGeo = new THREE.BoxGeometry(0.22, 0.12, 0.16);
       const mirrorL = new THREE.Mesh(mirrorGeo, redRoofMat);
       mirrorL.position.set(-1.02, 0.98, 0.68);
@@ -954,7 +1175,6 @@ export class SolaraWorld3D {
       mirrorR.position.set(1.02, 0.98, 0.68);
       car.add(mirrorL, mirrorR);
 
-      // 6. Two-Tier Citroën Front LED DRLs + Chrome Double-Chevron Bar + Headlamps
       const chromeMat = new THREE.MeshBasicMaterial({ color: 0xf8fafc });
       const drlMat = new THREE.MeshBasicMaterial({ color: 0xe0f2fe });
       const headMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
@@ -979,14 +1199,12 @@ export class SolaraWorld3D {
       mainHlR.position.set(0.66, 0.64, 2.01);
       car.add(mainHlL, mainHlR);
 
-      // 3D-effect Rounded Rectangular Rear Taillights
       const tlLeft = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.22, 0.08), tailMat);
       tlLeft.position.set(-0.68, 0.78, -2.01);
       const tlRight = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.22, 0.08), tailMat);
       tlRight.position.set(0.68, 0.78, -2.01);
       car.add(tlLeft, tlRight);
 
-      // Wheels with Diamond-Cut Alloy Hubcaps
       const wheelCoords = [
         [-0.98, 0.37, 1.28],
         [0.98, 0.37, 1.28],
@@ -999,7 +1217,7 @@ export class SolaraWorld3D {
         car.add(wheel);
 
         const hub = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.22, 0.22, 0.32, 10),
+          new THREE.CylinderGeometry(0.22, 0.22, 0.32, 8),
           hubMat
         );
         hub.rotation.z = Math.PI / 2;
@@ -1010,7 +1228,6 @@ export class SolaraWorld3D {
       return car;
     }
 
-    // Standard Sculpted Sports / Taxi / Police / SUV Mesh
     const bodyMat = new THREE.MeshStandardMaterial({
       color: spec.primaryColor,
       roughness: 0.22,
@@ -1029,7 +1246,7 @@ export class SolaraWorld3D {
       metalness: 0.9,
     });
 
-    const lowerGeo = new THREE.BoxGeometry(2.05, 0.52, 4.3, 4, 2, 6);
+    const lowerGeo = new THREE.BoxGeometry(2.05, 0.52, 4.3);
     const lower = new THREE.Mesh(lowerGeo, bodyMat);
     lower.position.y = 0.52;
     car.add(lower);
@@ -1048,7 +1265,7 @@ export class SolaraWorld3D {
     cabin.position.set(0, 1.02, -0.15);
     car.add(cabin);
 
-    const spoilerWingGeo = new THREE.BoxGeometry(1.95, 0.08, 0.42, 2, 1, 2);
+    const spoilerWingGeo = new THREE.BoxGeometry(1.95, 0.08, 0.42);
     const spoiler = new THREE.Mesh(spoilerWingGeo, trimMat);
     spoiler.position.set(0, 1.06, -1.92);
     car.add(spoiler);
@@ -1096,7 +1313,7 @@ export class SolaraWorld3D {
     isPlayer = false
   ): THREE.Group {
     const group = new THREE.Group();
-    const segs = 14;
+    const segs = 10;
 
     const skinMat = new THREE.MeshStandardMaterial({ color: 0xf1c27d, roughness: 0.6 });
     const jacketMat = new THREE.MeshStandardMaterial({
@@ -1119,13 +1336,13 @@ export class SolaraWorld3D {
     torso.position.y = 1.14;
     group.add(torso);
 
-    const limbGeo = new THREE.CylinderGeometry(0.09, 0.08, 0.65, 10);
+    const limbGeo = new THREE.CylinderGeometry(0.09, 0.08, 0.65, 8);
     const leftLeg = new THREE.Mesh(limbGeo, pantsMat);
     leftLeg.position.set(-0.11, 0.48, 0);
     const rightLeg = new THREE.Mesh(limbGeo, pantsMat);
     rightLeg.position.set(0.11, 0.48, 0);
 
-    const armGeo = new THREE.CylinderGeometry(0.075, 0.065, 0.54, 10);
+    const armGeo = new THREE.CylinderGeometry(0.075, 0.065, 0.54, 8);
     const leftArm = new THREE.Mesh(armGeo, jacketMat);
     leftArm.position.set(-0.31, 1.12, 0);
     const rightArm = new THREE.Mesh(armGeo, jacketMat);
@@ -1152,12 +1369,14 @@ export class SolaraWorld3D {
     this.vehicles = [];
     this.peds = [];
 
-    const count = Math.max(6, Math.min(30, this.settings.trafficCount));
+    const tier = this.settings.polyBudgetTier;
+    const maxTrafficForTier =
+      tier === 'low' ? 6 : tier === 'medium' ? 10 : tier === 'high' ? 14 : 20;
+    const count = Math.max(4, Math.min(maxTrafficForTier, this.settings.trafficCount));
     const coreAvenues = [-90, -62.5, -35, 20, 75];
     const coreStreets = [-75, -15, 45, 95];
 
     for (let i = 0; i < count; i++) {
-      // Pick vehicle spec using weighted selector (~50% Citroën C3 2019 White / Red Roof!)
       const spec = pickTrafficVehicleSpec(i);
       const mesh = this.createSculptedCarMesh(spec, this.settings.polyBudgetTier);
 
@@ -1169,7 +1388,6 @@ export class SolaraWorld3D {
       const dirSign: 1 | -1 = i % 3 === 0 ? -1 : 1;
       const laneOffset = dirSign * 2.3;
 
-      // Spawn first car (Citroën C3 2019 White & Red Roof!) right near player at Rond-Point Mesnana Golf
       const startAlong = i === 0 ? -10 : -85 + ((i * 23) % 175);
       const x = i === 0 ? -32.7 : onAvenue ? roadCoord + laneOffset : startAlong;
       const z = i === 0 ? -4 : onAvenue ? startAlong : roadCoord + laneOffset;
@@ -1202,7 +1420,7 @@ export class SolaraWorld3D {
     }
 
     const pedColors = [0x00a8e8, 0xdc2626, 0xf59e0b, 0x10b981, 0xe2e8f0];
-    const pedCount = Math.max(8, Math.min(24, Math.round(count * 1.05)));
+    const pedCount = Math.max(4, Math.min(12, Math.round(count * 0.75)));
     for (let p = 0; p < pedCount; p++) {
       const mesh = this.createArticulatedPersonMesh(
         pedColors[p % pedColors.length],
@@ -1244,10 +1462,10 @@ export class SolaraWorld3D {
     this.settings = { ...next };
 
     if (this.scene.fog instanceof THREE.Fog) {
-      this.scene.fog.near = Math.max(120, this.settings.drawDistance * 0.95);
-      this.scene.fog.far = Math.max(300, this.settings.drawDistance * 2.5);
+      this.scene.fog.near = Math.max(95, this.settings.drawDistance * 0.75);
+      this.scene.fog.far = Math.max(210, this.settings.drawDistance * 1.65);
     }
-    this.camera.far = Math.max(340, this.settings.drawDistance * 2.7);
+    this.camera.far = Math.max(230, this.settings.drawDistance * 1.8);
     this.camera.updateProjectionMatrix();
 
     if (prevTier !== this.settings.polyBudgetTier) {
@@ -1401,11 +1619,11 @@ export class SolaraWorld3D {
         this.bannerText = null;
       }
     }
-
-    // Gentle water scale shimmer at fixed Y = 0.015 (never moves Y across ground planes!)
-    if (this.oceanMesh && this.settings.animatedOcean) {
-      const pulse = 1 + Math.sin(this.oceanWaveTime * 2.0) * 0.015;
-      this.oceanMesh.scale.set(1.25 * pulse, 0.8 * pulse, 1);
+    if (this.zoneTransitionTimer > 0) {
+      this.zoneTransitionTimer = Math.max(0, this.zoneTransitionTimer - dt);
+      if (this.zoneTransitionTimer === 0) {
+        this.zoneTransitionTarget = null;
+      }
     }
 
     this.stepTrafficAI(dt);
@@ -1479,7 +1697,7 @@ export class SolaraWorld3D {
       }
     }
 
-    // Stream 3D city sectors around player's new position
+    // Stream 3D city sectors around player's new position & lookahead
     this.updateStreamedSectors(this.playerX, this.playerZ);
 
     // Garage Atlas Tanger check at (-76, 52) in Hay El Kawassim
@@ -1515,8 +1733,8 @@ export class SolaraWorld3D {
 
   /**
    * Smart Sliding Traffic Bubble:
-   * Keeps ambient traffic vehicles active within a ~220m bubble around the player,
-   * seamlessly recycling distant cars onto nearby avenues/streets as you drive across Greater Tangier.
+   * Keeps ambient traffic vehicles active within a ~165m bubble around the player,
+   * hiding distant cars and recycling them onto nearby streets as you drive across Greater Tangier.
    */
   private stepTrafficAI(dt: number): void {
     for (let i = 0; i < this.vehicles.length; i++) {
@@ -1524,11 +1742,10 @@ export class SolaraWorld3D {
       if (v === this.activeVehicle) continue;
 
       const distToPlayer = Math.hypot(v.x - this.playerX, v.z - this.playerZ);
-      if (distToPlayer > 235) {
-        // Recycle vehicle onto a road line near the player
+      if (distToPlayer > 175) {
         const nearRoads = getNearestRoadLines(
-          this.playerX + Math.sin(i * 1.7) * 95,
-          this.playerZ + Math.cos(i * 1.7) * 95
+          this.playerX + Math.sin(i * 1.7) * 75,
+          this.playerZ + Math.cos(i * 1.7) * 75
         );
         v.roadAxis = i % 2 === 0 ? 'z' : 'x';
         v.roadCoord = v.roadAxis === 'z' ? nearRoads.nearestAveX : nearRoads.nearestStreetZ;
@@ -1643,11 +1860,10 @@ export class SolaraWorld3D {
   private stepPedestrians(dt: number): void {
     for (let idx = 0; idx < this.peds.length; idx++) {
       const p = this.peds[idx];
-      // Recycle distant pedestrians into the player's current neighborhood bubble
-      if (Math.hypot(p.x - this.playerX, p.z - this.playerZ) > 190) {
+      if (Math.hypot(p.x - this.playerX, p.z - this.playerZ) > 140) {
         const nearRoads = getNearestRoadLines(this.playerX, this.playerZ);
         p.x = nearRoads.nearestAveX + (idx % 2 === 0 ? 6.4 : -6.4);
-        p.z = this.playerZ + ((idx * 19) % 120) - 60;
+        p.z = this.playerZ + ((idx * 19) % 90) - 45;
       }
 
       p.walkPhase += dt * 6;
@@ -1808,6 +2024,24 @@ export class SolaraWorld3D {
               ? 18200
               : 8400;
 
+    const zoneTransition: ZoneTransitionState | null =
+      this.zoneTransitionTimer > 0 && this.zoneTransitionTarget
+        ? {
+            active: true,
+            partNumber: this.zoneTransitionTarget.partNumber,
+            zoneName: this.zoneTransitionTarget.name,
+            subtitle: this.zoneTransitionTarget.subtitle,
+            progress: Math.min(
+              100,
+              Math.round(
+                ((this.zoneTransitionDuration - this.zoneTransitionTimer) /
+                  Math.max(0.1, this.zoneTransitionDuration)) *
+                  100
+              )
+            ),
+          }
+        : null;
+
     return {
       cash: this.cash,
       health: this.health,
@@ -1821,6 +2055,8 @@ export class SolaraWorld3D {
       playerZ: this.playerZ,
       playerHeading: this.playerHeading,
       district: getDistrictAt(this.playerX, this.playerZ),
+      currentZone: this.currentZone,
+      zoneTransition,
       streetName: getStreetNameAt(this.playerX, this.playerZ),
       currentMissionIndex: this.currentMissionIndex,
       currentObjectiveIndex: this.currentObjectiveIndex,
@@ -1836,9 +2072,9 @@ export class SolaraWorld3D {
       telemetry: {
         fps: this.measuredFps,
         frameTimeMs: this.lastFrameMs,
-        drawCalls: rInfo?.render?.calls || 48,
+        drawCalls: rInfo?.render?.calls || 32,
         triangles: Math.max(renderedTris, fallbackTris),
-        geometries: rInfo?.memory?.geometries || 64,
+        geometries: rInfo?.memory?.geometries || 24,
         textures: rInfo?.memory?.textures || 8,
         bufferWidth: this.bufferWidth,
         bufferHeight: this.bufferHeight,

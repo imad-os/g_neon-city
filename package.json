@@ -1,7 +1,7 @@
 {
   "name": "neon-city-solara-88",
   "private": true,
-  "version": "2.3.0",
+  "version": "2.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite --config code_source/vite.config.ts --port=3000 --host=0.0.0.0",

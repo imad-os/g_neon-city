@@ -10,6 +10,7 @@ import type {
   ControllerMapping,
   GraphicsSettings,
   RadioTrack,
+  WorldZoneId,
 } from '../game/types.ts';
 import type { WorldHudSnapshot } from '../game/world3d.ts';
 
@@ -24,6 +25,7 @@ interface GameHudProps {
   onNextRadioStation: () => void;
   onTriggerAction: () => void;
   onOpenHub: (tab: CommandHubTab) => void;
+  onFastTravelToZone?: (zoneId: WorldZoneId) => void;
 }
 
 export const GameHud: React.FC<GameHudProps> = ({
@@ -206,14 +208,10 @@ export const GameHud: React.FC<GameHudProps> = ({
               </span>
               <span>·</span>
               <span>{snapshot.telemetry.fps} FPS</span>
-              {snapshot.telemetry.activeSectors !== undefined && (
-                <>
-                  <span>·</span>
-                  <span className="text-emerald-300">
-                    {snapshot.telemetry.activeSectors}/{snapshot.telemetry.totalSectors} SECTORS
-                  </span>
-                </>
-              )}
+              <span>·</span>
+              <span className="text-emerald-300">
+                PART {snapshot.currentZone.partNumber}/5 ({snapshot.telemetry.activeSectors}/{snapshot.telemetry.totalSectors} SECTORS)
+              </span>
             </div>
           )}
         </div>
@@ -332,8 +330,32 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       </div>
 
+      {/* ZONE STREAMING TRANSITION LOADING BANNER (WHEN MOVING BETWEEN PART 1–5) */}
+      {snapshot.zoneTransition?.active && (
+        <div
+          data-testid="zone-transition-overlay"
+          className="my-auto mx-auto max-w-xl w-full px-6 py-4 rounded-2xl bg-[#04101e]/95 border-2 border-[#00a8e8] text-center shadow-[0_10px_40px_rgba(0,168,232,0.5)] space-y-2"
+        >
+          <div className="text-xs font-extrabold uppercase tracking-widest text-sky-300">
+            SMART SECTOR STREAMING · LOADING MAP PART {snapshot.zoneTransition.partNumber} OF 5
+          </div>
+          <div className="text-lg sm:text-2xl font-black uppercase tracking-wide text-white">
+            {snapshot.zoneTransition.zoneName}
+          </div>
+          <div className="text-xs font-semibold text-amber-300">
+            {snapshot.zoneTransition.subtitle}
+          </div>
+          <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden mt-2">
+            <div
+              className="h-full bg-gradient-to-r from-[#00a8e8] to-emerald-400 transition-all duration-150"
+              style={{ width: `${Math.max(25, snapshot.zoneTransition.progress)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* 8. CENTER BANNER NOTIFICATION */}
-      {hud.centerBanners && snapshot.bannerText && (
+      {!snapshot.zoneTransition?.active && hud.centerBanners && snapshot.bannerText && (
         <div className="my-auto mx-auto max-w-2xl px-6 py-3.5 rounded-2xl bg-[#04101e]/95 border-2 border-amber-400 text-center shadow-[0_8px_35px_rgba(0,168,232,0.45)]">
           <div className="text-base sm:text-xl font-black uppercase tracking-wider text-amber-300">
             {snapshot.bannerText}

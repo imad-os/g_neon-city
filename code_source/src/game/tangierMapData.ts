@@ -5,6 +5,8 @@ import type {
   MapLandmark,
   RoadNode,
   RoadSegment,
+  WorldZoneId,
+  WorldZoneInfo,
 } from './types.ts';
 
 /**
@@ -113,6 +115,94 @@ function classifyDistrictByCoords(x: number, z: number): DistrictId {
   if (x > 140) return 'malabata-corniche';
   if (z < -55) return 'route-boubana';
   return 'mesnana-golf';
+}
+
+/**
+ * 5 Major Streaming World Zones ("Map Parts 1–5").
+ * Only the active zone's nearby sectors (and boundary lookahead sectors) are mounted in 3D WebGL
+ * at any time, eliminating full-world GPU/CPU overhead even on 1GB TV Eco devices.
+ */
+export const TANGIER_WORLD_ZONES: WorldZoneInfo[] = [
+  {
+    id: 'part-1-core',
+    partNumber: 1,
+    shortLabel: 'PART 1 · MESNANA & KAWASSIM',
+    name: 'Part 1: Mesnana Golf, Royal Golf & Kawassim',
+    subtitle: 'Rond-Point Mesnana, 1914 Royal Country Club & Hay El Kawassim',
+    color: '#00a8e8',
+    spawnX: -35,
+    spawnZ: -15,
+    spawnHeading: 0,
+    bounds: { minX: -145, maxX: 140, minZ: -55, maxZ: 140 },
+  },
+  {
+    id: 'part-2-boubana',
+    partNumber: 2,
+    shortLabel: 'PART 2 · BOUBANA & SOCCO ALTO',
+    name: 'Part 2: Route de Boubana & Socco Alto',
+    subtitle: 'Hillside Mediterranean villas, Place Socco Alto & Vieille Montagne',
+    color: '#f59e0b',
+    spawnX: 20,
+    spawnZ: -75,
+    spawnHeading: Math.PI / 2,
+    bounds: { minX: -145, maxX: 140, minZ: -460, maxZ: -55 },
+  },
+  {
+    id: 'part-3-spartel',
+    partNumber: 3,
+    shortLabel: 'PART 3 · CAP SPARTEL COAST',
+    name: 'Part 3: Cap Spartel & Achakar Promontory',
+    subtitle: 'Atlantic-Mediterranean lighthouse, diplomatic boulevard & pine cliffs',
+    color: '#38bdf8',
+    spawnX: -280,
+    spawnZ: -260,
+    spawnHeading: 0,
+    bounds: { minX: -460, maxX: -145, minZ: -460, maxZ: 140 },
+  },
+  {
+    id: 'part-4-south',
+    partNumber: 4,
+    shortLabel: 'PART 4 · BOUKHALEF & RAHRAH',
+    name: 'Part 4: Boukhalef, Grand Stade & Forêt de Rahrah',
+    subtitle: 'Grand Stade Ibn Batouta, Lac Rahrah pine park & Route de Rabat',
+    color: '#10b981',
+    spawnX: -35,
+    spawnZ: 95,
+    spawnHeading: 0,
+    bounds: { minX: -460, maxX: 140, minZ: 140, maxZ: 460 },
+  },
+  {
+    id: 'part-5-malabata',
+    partNumber: 5,
+    shortLabel: 'PART 5 · MALABATA CORNICHE',
+    name: 'Part 5: Malabata Corniche & Baie de Tanger',
+    subtitle: 'Eastern waterfront promenade, Marina towers & Avenue Mohammed V',
+    color: '#06b6d4',
+    spawnX: 190,
+    spawnZ: -15,
+    spawnHeading: 0,
+    bounds: { minX: 140, maxX: 460, minZ: -460, maxZ: 460 },
+  },
+];
+
+export function getWorldZoneAt(x: number, z: number): WorldZoneInfo {
+  if (x >= -145 && x <= 140 && z >= -55 && z <= 140) {
+    return TANGIER_WORLD_ZONES[0]; // Part 1: Core
+  }
+  if (x > 140) {
+    return TANGIER_WORLD_ZONES[4]; // Part 5: Malabata
+  }
+  if (z > 140) {
+    return TANGIER_WORLD_ZONES[3]; // Part 4: Boukhalef & Rahrah South
+  }
+  if (x < -145) {
+    return TANGIER_WORLD_ZONES[2]; // Part 3: Cap Spartel
+  }
+  return TANGIER_WORLD_ZONES[1]; // Part 2: Boubana & Socco Alto
+}
+
+export function getWorldZoneById(id: WorldZoneId): WorldZoneInfo {
+  return TANGIER_WORLD_ZONES.find((z) => z.id === id) || TANGIER_WORLD_ZONES[0];
 }
 
 const CORE_NAMED_NODES: Record<string, { id: string; name: string; isRoundabout: boolean; radius: number }> = {
@@ -751,11 +841,23 @@ export function findClosestRoadNode(x: number, z: number): RoadNode {
 }
 
 /**
- * Finds the name of the street segment or roundabout closest to (x, z).
+ * Cached Street Name lookup so 60Hz/8Hz HUD & GPS checks don't re-scan all 195 road segments
+ * when the player has moved less than 3.5 meters.
  */
+let lastStreetQueryX = -99999;
+let lastStreetQueryZ = -99999;
+let lastStreetNameResult = 'Boulevard Mesnana Golf';
+
 export function getStreetNameAt(x: number, z: number): string {
+  if (Math.hypot(x - lastStreetQueryX, z - lastStreetQueryZ) < 3.5) {
+    return lastStreetNameResult;
+  }
+  lastStreetQueryX = x;
+  lastStreetQueryZ = z;
+
   for (const n of TANGIER_ROAD_NODES) {
     if (n.isRoundabout && Math.hypot(x - n.x, z - n.z) <= n.radius + 4) {
+      lastStreetNameResult = n.name;
       return n.name;
     }
   }
@@ -783,28 +885,67 @@ export function getStreetNameAt(x: number, z: number): string {
     }
   }
 
+  lastStreetNameResult = bestName;
   return bestName;
 }
 
 /**
- * Computes the shortest connected road-network GPS path from (startX, startZ)
- * to (targetX, targetZ) across the Greater Tangier road graph.
+ * Cached shortest-path GPS route across the Greater Tangier road graph.
+ * Avoids running Dijkstra on every mini-map frame when endpoints haven't moved > 8m.
  */
+let cachedRouteKey = '';
+let cachedRouteSX = -99999;
+let cachedRouteSZ = -99999;
+let cachedRouteTX = -99999;
+let cachedRouteTZ = -99999;
+let cachedRouteNodes: { x: number; z: number }[] = [];
+
 export function computeGpsRoadRoute(
   startX: number,
   startZ: number,
   targetX: number,
   targetZ: number
 ): { x: number; z: number }[] {
+  if (
+    cachedRouteNodes.length >= 2 &&
+    Math.hypot(startX - cachedRouteSX, startZ - cachedRouteSZ) < 8.5 &&
+    Math.hypot(targetX - cachedRouteTX, targetZ - cachedRouteTZ) < 4.0
+  ) {
+    // Update the dynamic start & end points in O(1) without re-running graph search
+    const updated = cachedRouteNodes.slice();
+    updated[0] = { x: startX, z: startZ };
+    updated[updated.length - 1] = { x: targetX, z: targetZ };
+    return updated;
+  }
+
   const startNode = findClosestRoadNode(startX, startZ);
   const endNode = findClosestRoadNode(targetX, targetZ);
+  const pairKey = `${startNode.id}__${endNode.id}`;
+
+  if (pairKey === cachedRouteKey && cachedRouteNodes.length >= 2) {
+    cachedRouteSX = startX;
+    cachedRouteSZ = startZ;
+    cachedRouteTX = targetX;
+    cachedRouteTZ = targetZ;
+    const updated = cachedRouteNodes.slice();
+    updated[0] = { x: startX, z: startZ };
+    updated[updated.length - 1] = { x: targetX, z: targetZ };
+    return updated;
+  }
 
   if (startNode.id === endNode.id) {
-    return [
+    const simple = [
       { x: startX, z: startZ },
       { x: startNode.x, z: startNode.z },
       { x: targetX, z: targetZ },
     ];
+    cachedRouteKey = pairKey;
+    cachedRouteSX = startX;
+    cachedRouteSZ = startZ;
+    cachedRouteTX = targetX;
+    cachedRouteTZ = targetZ;
+    cachedRouteNodes = simple;
+    return simple;
   }
 
   const dist: Record<string, number> = {};
@@ -859,5 +1000,12 @@ export function computeGpsRoadRoute(
     path.push({ x: n.x, z: n.z });
   }
   path.push({ x: targetX, z: targetZ });
+
+  cachedRouteKey = pairKey;
+  cachedRouteSX = startX;
+  cachedRouteSZ = startZ;
+  cachedRouteTX = targetX;
+  cachedRouteTZ = targetZ;
+  cachedRouteNodes = path;
   return path;
 }

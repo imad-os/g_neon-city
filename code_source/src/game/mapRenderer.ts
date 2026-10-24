@@ -7,6 +7,7 @@ import {
   TANGIER_WORLD_MAX,
   TANGIER_WORLD_MIN,
   TANGIER_WORLD_SPAN,
+  TANGIER_WORLD_ZONES,
   computeGpsRoadRoute,
   getRoadNodeById,
 } from './tangierMapData.ts';
@@ -17,6 +18,7 @@ const WORLD_MAX = TANGIER_WORLD_MAX;
 const WORLD_SPAN = TANGIER_WORLD_SPAN;
 
 let cachedBaseCanvas: HTMLCanvasElement | null = null;
+let lastMiniMapHash = '';
 
 export function worldToMapUv(x: number, z: number): { u: number; v: number } {
   return {
@@ -33,14 +35,14 @@ export function mapUvToWorld(u: number, v: number): { x: number; z: number } {
 }
 
 /**
- * Generates and caches a high-resolution 1536x1536 satellite + street cartographic base map
+ * Generates and caches a crisp 768x768 cartographic base map (4x faster to composite than 1536x1536)
  * of Greater Tangier (-460m to +460m): Mesnana Golf, Royal Country Club, Route de Boubana,
  * Route de Rahrah, Hay El Kawassim, Cap Spartel, Boukhalef Grand Stade, and Malabata Corniche.
  */
 export function getTangierBaseMapCanvas(): HTMLCanvasElement {
   if (cachedBaseCanvas) return cachedBaseCanvas;
 
-  const size = 1536;
+  const size = 768;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
@@ -315,6 +317,16 @@ export function renderTopRotatingMiniMap(
     zoomedOut: boolean;
   }
 ): void {
+  // Skip redundant 2D canvas blits when player/heading/target haven't changed
+  const qx = Math.round(params.playerX * 2);
+  const qz = Math.round(params.playerZ * 2);
+  const qh = Math.round(params.playerHeading * 40);
+  const qtX = params.targetX !== null ? Math.round(params.targetX) : 'n';
+  const qtZ = params.targetZ !== null ? Math.round(params.targetZ) : 'n';
+  const hash = `${qx}_${qz}_${qh}_${qtX}_${qtZ}_${params.zoomedOut ? 1 : 0}`;
+  if (hash === lastMiniMapHash) return;
+  lastMiniMapHash = hash;
+
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const w = canvas.width;
@@ -491,15 +503,28 @@ export function renderFullWorldMap(
     mapDrawSize
   );
 
-  // Subtle Active 3D Sector Streaming Bubble indicator around player
+  // Draw 5-Part World Streaming Zone Boundaries + Active Streaming Bubble
+  ctx.save();
+  ctx.setLineDash([6 / params.zoom, 6 / params.zoom]);
+  ctx.lineWidth = 1.4 / params.zoom;
+  for (const zInfo of TANGIER_WORLD_ZONES) {
+    const zx = toMapX(zInfo.bounds.minX);
+    const zz = toMapZ(zInfo.bounds.minZ);
+    const zw = (zInfo.bounds.maxX - zInfo.bounds.minX) * pxPerMeter;
+    const zd = (zInfo.bounds.maxZ - zInfo.bounds.minZ) * pxPerMeter;
+    ctx.strokeStyle = zInfo.color;
+    ctx.strokeRect(zx, zz, zw, zd);
+  }
+  ctx.restore();
+
   const px = toMapX(params.playerX);
   const pz = toMapZ(params.playerZ);
   ctx.save();
-  ctx.strokeStyle = 'rgba(56, 189, 248, 0.32)';
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
   ctx.setLineDash([5 / params.zoom, 5 / params.zoom]);
-  ctx.lineWidth = 1.5 / params.zoom;
+  ctx.lineWidth = 1.8 / params.zoom;
   ctx.beginPath();
-  ctx.arc(px, pz, 240 * pxPerMeter, 0, Math.PI * 2);
+  ctx.arc(px, pz, 155 * pxPerMeter, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 

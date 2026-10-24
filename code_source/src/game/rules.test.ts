@@ -132,3 +132,26 @@ test('keyboard normalization supports QWERTY WASD, AZERTY ZQSD, Arrow keys, and 
   assert.equal(normalizeKeyboardCode('', 'ArrowUp'), 'ArrowUp');
   assert.equal(normalizeKeyboardCode('', ' '), 'Space');
 });
+
+test('5-Part World Zone streaming partitions Greater Tangier and caches GPS routes cleanly', async () => {
+  const {
+    TANGIER_WORLD_ZONES,
+    computeGpsRoadRoute,
+    getStreetNameAt,
+    getWorldZoneAt,
+  } = await import('./tangierMapData.ts');
+
+  assert.equal(TANGIER_WORLD_ZONES.length, 5);
+  assert.equal(getWorldZoneAt(-35, -15).id, 'part-1-core');
+  assert.equal(getWorldZoneAt(20, -90).id, 'part-2-boubana');
+  assert.equal(getWorldZoneAt(-280, -260).id, 'part-3-spartel');
+  assert.equal(getWorldZoneAt(-175, 320).id, 'part-4-south');
+  assert.equal(getWorldZoneAt(310, -160).id, 'part-5-malabata');
+
+  const route1 = computeGpsRoadRoute(-35, -15, 75, -75);
+  const route2 = computeGpsRoadRoute(-34, -14, 75, -75);
+  assert.ok(route1.length >= 3);
+  assert.equal(route1.length, route2.length);
+  assert.equal(getStreetNameAt(-35, -15), 'Rond-Point Mesnana Golf');
+});
+

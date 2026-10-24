@@ -31,6 +31,7 @@ import type {
   RadioTrack,
   SavedProgress,
   TextSizeScale,
+  WorldZoneId,
 } from './game/types.ts';
 import { SolaraWorld3D, type WorldHudSnapshot } from './game/world3d.ts';
 
@@ -277,6 +278,17 @@ export default function App() {
     }
   };
 
+  const handleFastTravelToZone = (zoneId: WorldZoneId) => {
+    const world = worldRef.current;
+    if (!world) return;
+    world.fastTravelToZone(zoneId);
+    audioRef.current.playSfx('menuSelect');
+    setHudSnapshot(world.getHudSnapshot());
+    if (settingsOpenRef.current) {
+      handleCloseSettings();
+    }
+  };
+
   const navigateTitleOrModal = (dir: 'up' | 'down' | 'left' | 'right' | 'confirm') => {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (now - lastMenuNavTsRef.current < 90) return;
@@ -416,7 +428,7 @@ export default function App() {
 
     // 3. Context-Aware Active Gameplay Actions (In Car vs On Foot + System UI)
     if (gameStateRef.current === 'playing') {
-      const inCar = Boolean(worldRef.current?.getHudSnapshot().inVehicle);
+      const inCar = Boolean(worldRef.current?.isInVehicle());
 
       // System UI bindings work in both contexts
       if (index === btns.uiOpenWorldMap) {
@@ -618,7 +630,7 @@ export default function App() {
       }
 
       if (gameStateRef.current === 'playing' && !settingsOpenRef.current) {
-        const inCar = Boolean(world.getHudSnapshot().inVehicle);
+        const inCar = Boolean(world.isInVehicle());
 
         // System UI Keys
         if (normCode === (keyMap.uiOpenWorldMap || 'KeyM')) {
@@ -792,7 +804,7 @@ export default function App() {
       let rx = applyStickDeadzone(rawAx2, dz);
       const ry = (map.invertLookY ? 1 : -1) * applyStickDeadzone(rawAx3, dz);
 
-      const inCar = Boolean(worldRef.current?.getHudSnapshot().inVehicle);
+      const inCar = Boolean(worldRef.current?.isInVehicle());
 
       if (inCar) {
         const steerLeftKey = keys.has(keyMap.carSteerLeft || 'KeyA') || keys.has('ArrowLeft');
@@ -860,12 +872,12 @@ export default function App() {
     const frame = (ts: number) => {
       rafId = requestAnimationFrame(frame);
       if (!lastTs) lastTs = ts;
-      const rawDeltaMs = Math.min(250, ts - lastTs);
+      const rawDeltaMs = Math.min(35, ts - lastTs);
       lastTs = ts;
-      accumMs += rawDeltaMs;
+      accumMs = Math.min(STEP_MS * 2, accumMs + rawDeltaMs);
 
+      pollGamepadsAndKeyboard();
       while (accumMs >= STEP_MS) {
-        pollGamepadsAndKeyboard();
         if (gameStateRef.current === 'playing' && !settingsOpenRef.current) {
           world.step(1 / 60, 'playing', stepInput);
           audioRef.current.tickRadio();
@@ -883,10 +895,14 @@ export default function App() {
       }
 
       hudSyncAccum += rawDeltaMs;
-      if (hudSyncAccum >= 125) {
+      if (hudSyncAccum >= 165) {
         hudSyncAccum = 0;
         setHudSnapshot(world.getHudSnapshot());
-        if (typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function') {
+        if (
+          settingsOpenRef.current &&
+          typeof navigator !== 'undefined' &&
+          typeof navigator.getGamepads === 'function'
+        ) {
           try {
             const p = navigator.getGamepads()[0];
             if (p && p.connected) {
@@ -913,10 +929,6 @@ export default function App() {
         rafId = 0;
       }
     };
-
-    const gamepadTimerId = window.setInterval(() => {
-      pollGamepadsAndKeyboard();
-    }, 40);
 
     let unsubBtn: (() => void) | undefined;
     let unsubAxes: (() => void) | undefined;
@@ -1091,7 +1103,6 @@ export default function App() {
     }
 
     return () => {
-      window.clearInterval(gamepadTimerId);
       window.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('resize', onResize);
       window.removeEventListener('gamepadconnected', refreshConnectedPads);
@@ -1153,6 +1164,7 @@ export default function App() {
           onNextRadioStation={handleNextRadioStation}
           onTriggerAction={() => worldRef.current?.performAttackOrHorn()}
           onOpenHub={handleOpenHub}
+          onFastTravelToZone={handleFastTravelToZone}
         />
       )}
 
@@ -1180,6 +1192,7 @@ export default function App() {
           onAddCustomTrack={handleAddCustomTrack}
           onSelectMission={handleSelectMission}
           onSetCustomWaypoint={handleSetCustomWaypoint}
+          onFastTravelToZone={handleFastTravelToZone}
           telemetry={hudSnapshot.telemetry}
           onSaveProgress={persistProgressNow}
           onClose={handleCloseSettings}

@@ -6,11 +6,12 @@ import {defineConfig, type Plugin} from 'vite';
 
 const rootMypcPath = path.resolve(import.meta.dirname, '../mypc-app.json');
 const publicMypcPath = path.resolve(import.meta.dirname, './public/mypc-app.json');
-const mypcConfig = JSON.parse(fs.readFileSync(rootMypcPath, 'utf-8'));
+const rawMypcText = fs.readFileSync(rootMypcPath, 'utf-8');
+const mypcConfig = JSON.parse(rawMypcText);
 if (fs.existsSync(publicMypcPath)) {
-  fs.writeFileSync(publicMypcPath, JSON.stringify(mypcConfig, null, 2) + '\n');
+  fs.writeFileSync(publicMypcPath, rawMypcText);
 }
-const APP_VERSION = mypcConfig.version || '2.3.0';
+const APP_VERSION = mypcConfig.version || '2.4.0';
 
 const IMPORT_MAP = {
   imports: {

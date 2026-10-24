@@ -15,7 +15,11 @@ import {
   remapControllerAction,
   resetContextSubTabMapping,
 } from '../game/rules.ts';
-import { TANGIER_LANDMARKS, TANGIER_WORLD_SPAN } from '../game/tangierMapData.ts';
+import {
+  TANGIER_LANDMARKS,
+  TANGIER_WORLD_SPAN,
+  TANGIER_WORLD_ZONES,
+} from '../game/tangierMapData.ts';
 import type {
   CommandHubTab,
   ControlContextTab,
@@ -32,6 +36,7 @@ import type {
   RadioTrack,
   RenderTelemetry,
   TextSizeScale,
+  WorldZoneId,
 } from '../game/types.ts';
 import type { WorldHudSnapshot } from '../game/world3d.ts';
 
@@ -57,6 +62,7 @@ interface SettingsModalProps {
   onAddCustomTrack: (title: string, artist: string, url: string) => void;
   onSelectMission: (missionIndex: number) => void;
   onSetCustomWaypoint: (pt: { x: number; z: number } | null) => void;
+  onFastTravelToZone?: (zoneId: WorldZoneId) => void;
   telemetry: RenderTelemetry;
   onSaveProgress: () => void;
   onClose: () => void;
@@ -130,6 +136,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onAddCustomTrack,
   onSelectMission,
   onSetCustomWaypoint,
+  onFastTravelToZone,
   telemetry,
   onSaveProgress,
   onClose,
@@ -526,7 +533,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-[460px]">
+              {/* 5-PART WORLD STREAMING ZONES & INSTANT ZONE LOADER */}
+              <div className="p-3 rounded-xl bg-[#04101e]/90 border border-emerald-400/35 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-black uppercase tracking-wider text-emerald-300">
+                    5-PART SMART WORLD STREAMING — ONLY ACTIVE PART LOADED IN 3D ({telemetry.activeSectors}/{telemetry.totalSectors} SECTORS MOUNTED)
+                  </span>
+                  <span className="font-bold text-sky-300">
+                    Click any Part below to load &amp; fast-travel directly, or drive across boundaries to auto-stream!
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {TANGIER_WORLD_ZONES.map((zone) => {
+                    const isCurrentZone = snapshot.currentZone.id === zone.id;
+                    return (
+                      <button
+                        key={zone.id}
+                        type="button"
+                        data-testid={`fast-travel-${zone.id}`}
+                        onClick={() => onFastTravelToZone?.(zone.id)}
+                        className={`tv-focus-ring p-2.5 rounded-xl border text-left transition-all ${
+                          isCurrentZone
+                            ? 'bg-emerald-500/20 border-emerald-400 text-white shadow-[0_0_16px_rgba(16,185,129,0.3)]'
+                            : 'bg-[#082038] border-sky-400/25 hover:border-sky-300 text-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[11px] font-black uppercase text-sky-300">
+                            PART {zone.partNumber}/5
+                          </span>
+                          <span
+                            className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase ${
+                              isCurrentZone
+                                ? 'bg-emerald-400 text-[#04101e]'
+                                : 'bg-sky-400/20 text-sky-200'
+                            }`}
+                          >
+                            {isCurrentZone ? 'LOADED' : 'LOAD →'}
+                          </span>
+                        </div>
+                        <div className="text-xs font-extrabold text-white truncate mt-1">
+                          {zone.shortLabel.replace(/^PART \d · /, '')}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-[430px]">
                 {/* Interactive High-Resolution Cartographic Canvas */}
                 <div className="lg:col-span-2 relative rounded-2xl overflow-hidden border-2 border-[#00a8e8] bg-[#04101e] flex items-center justify-center">
                   <canvas

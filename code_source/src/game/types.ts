@@ -18,6 +18,31 @@ export type DistrictId =
   | 'boukhalef-uni'
   | 'malabata-corniche';
 
+export type WorldZoneId =
+  | 'part-1-core'
+  | 'part-2-boubana'
+  | 'part-3-spartel'
+  | 'part-4-south'
+  | 'part-5-malabata';
+
+export interface WorldZoneInfo {
+  id: WorldZoneId;
+  partNumber: 1 | 2 | 3 | 4 | 5;
+  shortLabel: string;
+  name: string;
+  subtitle: string;
+  color: string;
+  spawnX: number;
+  spawnZ: number;
+  spawnHeading: number;
+  bounds: {
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+  };
+}
+
 export interface HudVisibilitySettings {
   masterHud: boolean;
   minimap: boolean;
